@@ -254,6 +254,16 @@ namespace {
       changed |= hardenPostCalls(MF);
     if (EnableLLSCTStackInit)
       changed |= stackInit(MF);
+
+    // Protect test
+    {
+      MachineBasicBlock& Entry = MF.front();
+      auto InsertPt = Entry.begin();
+      const auto *TII = MF.getSubtarget().getInstrInfo();
+      BuildMI(Entry, InsertPt, DebugLoc(), TII->get(X86::PROTECT), X86::RSP)
+	.addReg(X86::RSP);
+      changed = true;
+    }
     
     return changed;
   }

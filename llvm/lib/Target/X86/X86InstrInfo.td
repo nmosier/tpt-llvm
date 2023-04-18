@@ -3256,6 +3256,8 @@ include "X86InstrSystem.td"
 include "X86InstrCompiler.td"
 include "X86InstrVecCompiler.td"
 
+include "X86InstrLLSCT.td"
+
 //===----------------------------------------------------------------------===//
 // Assembler Mnemonic Aliases
 //===----------------------------------------------------------------------===//
