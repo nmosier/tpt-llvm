@@ -1,3 +1,5 @@
+add_compile_options(-g -O0) # FIXME: remove this once done debugging
+
 add_llvm_component_group(X86 HAS_JIT)
 
 set(LLVM_TARGET_DEFINITIONS X86.td)

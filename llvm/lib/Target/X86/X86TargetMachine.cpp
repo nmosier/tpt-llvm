@@ -551,7 +551,6 @@ void X86PassConfig::addPostRegAlloc() {
   // analyses needed by the LVIHardening pass when compiling at -O0.
   if (getOptLevel() != CodeGenOpt::None)
     addPass(createX86LoadValueInjectionLoadHardeningPass());
-
   addPass(createX86LLSCTPass());
 }
 
