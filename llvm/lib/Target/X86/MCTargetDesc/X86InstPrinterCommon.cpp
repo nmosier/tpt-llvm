@@ -366,6 +366,9 @@ void X86InstPrinterCommon::printInstFlags(const MCInst *MI, raw_ostream &O,
   if ((TSFlags & X86II::NOTRACK) || (Flags & X86::IP_HAS_NOTRACK))
     O << "\tnotrack\t";
 
+  if ((TSFlags & X86II::NOSPEC) || (Flags & X86::IP_HAS_NOSPEC))
+    O << "\tnospec\t";
+
   if (Flags & X86::IP_HAS_REPEAT_NE)
     O << "\trepne\t";
   else if (Flags & X86::IP_HAS_REPEAT)

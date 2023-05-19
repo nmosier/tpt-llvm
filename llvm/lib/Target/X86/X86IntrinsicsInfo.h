@@ -1243,6 +1243,7 @@ static const IntrinsicData  IntrinsicsWithoutChain[] = {
   X86_INTRINSIC_DATA(fma_vfmaddsub_pd_256, INTR_TYPE_3OP, X86ISD::FMADDSUB, 0),
   X86_INTRINSIC_DATA(fma_vfmaddsub_ps,     INTR_TYPE_3OP, X86ISD::FMADDSUB, 0),
   X86_INTRINSIC_DATA(fma_vfmaddsub_ps_256, INTR_TYPE_3OP, X86ISD::FMADDSUB, 0),
+  X86_INTRINSIC_DATA(protect, INTR_TYPE_1OP, X86ISD::PROTECT, 0),
   X86_INTRINSIC_DATA(sse_cmp_ps,        INTR_TYPE_3OP, X86ISD::CMPP, 0),
   X86_INTRINSIC_DATA(sse_cmp_ss,        INTR_TYPE_3OP, X86ISD::FSETCC, 0),
   X86_INTRINSIC_DATA(sse_comieq_ss,     COMI, X86ISD::COMI, ISD::SETEQ),

@@ -67,6 +67,7 @@ namespace X86 {
     IP_USE_EVEX =      1U << 9,
     IP_USE_DISP8 =     1U << 10,
     IP_USE_DISP32 =    1U << 11,
+    IP_HAS_NOSPEC =    1U << 12,
   };
 
   enum OperandType : unsigned {
@@ -972,7 +973,11 @@ namespace X86II {
 
     // Force VEX encoding
     ExplicitVEXShift = NoTrackShift + 1,
-    ExplicitVEXPrefix = 1ULL << ExplicitVEXShift
+    ExplicitVEXPrefix = 1ULL << ExplicitVEXShift,
+
+    // NOSPEC prefix
+    NoSpecShift = ExplicitVEXShift + 1,
+    NOSPEC = 1ULL << NoSpecShift
   };
 
   /// \returns true if the instruction with given opcode is a prefix.

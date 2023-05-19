@@ -1,3 +1,7 @@
+#include "X86LLSCT.h"
+
+#include <optional>
+
 #include "X86.h"
 #include "X86InstrBuilder.h"
 #include "X86Subtarget.h"
@@ -51,13 +55,24 @@ namespace {
 
   char X86LLSCT::ID = 0;
 
-  int getMemRefBeginIdx(const MachineInstr& MI) {
-    const MCInstrDesc& Desc = MI.getDesc();
+  int getMemRefBeginIdx(const MCInstrDesc& Desc) {
     int MemRefBeginIdx = X86II::getMemoryOperandNo(Desc.TSFlags);
     if (MemRefBeginIdx < 0)
       return -1;
     MemRefBeginIdx += X86II::getOperandBias(Desc);
     return MemRefBeginIdx;
+  }
+
+  int getMemRefBeginIdx(const MachineInstr& MI) {
+    return getMemRefBeginIdx(MI.getDesc());
+  }
+
+  bool hasMemRef(const MCInstrDesc& Desc) {
+    return getMemRefBeginIdx(Desc) >= 0;
+  }
+
+  bool hasMemRef(const MachineInstr& MI) {
+    return getMemRefBeginIdx(MI) >= 0;
   }
 
   // InsertPt points to one past the call.
@@ -245,9 +260,46 @@ namespace {
   }
 
 
+  StringRef getInstrName(const MachineInstr& MI) {
+    const MCInstrInfo *MII = MI.getMF()->getSubtarget().getInstrInfo();
+    // const MCInstrDesc &MCID = MII->get(MI.getOpcode());
+    return MII->getName(MI.getOpcode());
+  }
+  
+
+#if 0
+  void experiments(const MachineFunction& MF) {
+    const auto *TII = MF.getSubtarget().getInstrInfo();
+    for (const MachineBasicBlock& MBB : MF) {
+      for (const MachineInstr& MI : MBB) {
+	if (MI.mayLoadOrStore()) {
+	  errs() << "Instruction: ";
+	  MI.dump();
+	}
+	if (MI.mayLoad()) {
+	  unsigned LoadRegIndex;
+	  const unsigned UnfoldOpcode =
+	    TII->getOpcodeAfterMemoryUnfold(X86::PUSH64rmm/*MI.getOpcode()*/, /*unfoldLoad*/true, /*unfoldStore*/false, &LoadRegIndex);
+	  errs() << "Unfolded load opcode: " << getInstrName(MI) << " " << (int) LoadRegIndex << "\n";
+	}
+	if (MI.mayStore()) {
+	  unsigned StoreRegIndex;
+	  const unsigned UnfoldOpcode = TII->getOpcodeAfterMemoryUnfold(MI.getOpcode(),
+									/*unfoldLoad*/false, /*unfoldStore*/true,
+									&StoreRegIndex);
+	  errs() << "Unfolded store opcode: " << getInstrName(MI) << " " << (int) StoreRegIndex << "\n";
+	}
+      }
+    }
+  }
+#endif
+  
+
   bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
     if (!EnableLLSCT)
       return false;
+
+    // Populate SSBD flag.
     
     bool changed = false;
     if (EnableLLSCTRet)
@@ -256,6 +308,7 @@ namespace {
       changed |= stackInit(MF);
 
     // Protect test
+#if 0
     {
       MachineBasicBlock& Entry = MF.front();
       auto InsertPt = Entry.begin();
@@ -264,16 +317,361 @@ namespace {
 	.addReg(X86::RSP);
       changed = true;
     }
-    
+#endif
+
     return changed;
   }
   
   
 }
 
-INITIALIZE_PASS_BEGIN(X86LLSCT, PASS_KEY,
+
+static bool isNcaMemRef(const MachineInstr& MI, int MemIdx) {
+  const MachineOperand& BaseMO = MI.getOperand(MemIdx + X86::AddrBaseReg);
+  const MachineOperand& IndexMO = MI.getOperand(MemIdx + X86::AddrIndexReg);
+  
+  // If we have at least one (non-frame-index, non-RIP) register operand,
+  // and neither operand is load-dependent, we need to check the load.
+  unsigned BaseReg = 0, IndexReg = 0;
+  if (!BaseMO.isFI() && BaseMO.getReg() != X86::RIP &&
+      BaseMO.getReg() != X86::NoRegister)
+    BaseReg = BaseMO.getReg();
+  if (IndexMO.getReg() != X86::NoRegister)
+    IndexReg = IndexMO.getReg();
+
+  return BaseReg || IndexReg;
+}
+
+#if 0
+MachineInstr::StFlags_t llvm::X86::getDefaultStoreFlags_Prologue() {
+  return MachineInstr::StEnable | MachineInstr::StSsbd | MachineInstr::StStrict | MachineInstr::StSecret;
+}
+
+MachineInstr::StFlags_t llvm::X86::getDefaultStoreFlags_CaStack() {
+  return MachineInstr::StEnable | MachineInstr::StSsbd | MachineInstr::StSecret;
+}
+
+MachineInstr::StFlags_t llvm::X86::getDefaultStoreFlags_CaGlobal() {
+  return MachineInstr::StEnable;
+}
+
+MachineInstr::StFlags_t llvm::X86::getDefaultStoreFlags_Nca() {
+  return MachineInstr::StEnable | MachineInstr::StNca | MachineInstr::StSecret;
+}
+
+MachineInstr::LdFlags_t llvm::X86::getDefaultLoadFlags_Epilogue() {
+  return MachineInstr::LdEnable | MachineInstr::LdSsbd | MachineInstr::LdStrict | MachineInstr::LdLeak;
+}
+
+MachineInstr::LdFlags_t llvm::X86::getDefaultLoadFlags_CaStack() {
+  return MachineInstr::LdEnable | MachineInstr::LdSsbd | MachineInstr::LdLeak;
+}
+
+MachineInstr::LdFlags_t llvm::X86::getDefaultLoadFlags_CaGlobal() {
+  return MachineInstr::LdEnable;
+}
+
+MachineInstr::LdFlags_t llvm::X86::getDefaultLoadFlags_Nca() {
+  return MachineInstr::LdEnable | MachineInstr::LdNca | MachineInstr::LdLeak;
+}
+#endif
+
+
+
+void llvm::X86::getAccessInfo(const MachineInstr& MI, SmallVectorImpl<AccessInfo>& Infos) {
+  const MachineFunction& MF = *MI.getMF();
+  const auto *TRI = MF.getSubtarget<X86Subtarget>().getRegisterInfo();
+  const auto *TFL = MF.getSubtarget().getFrameLowering();
+  const unsigned Opcode = MI.getOpcode();
+  
+  if (!MI.mayLoadOrStore())
+    return;
+  
+
+  // "Constant-address" registers: stack pointer, frame pointer, and base pointer (if they exist).
+  llvm::SmallSet<Register, 3> StackRegs;
+  StackRegs.insert(X86::RSP);
+  if (TFL->hasFP(MF))
+    StackRegs.insert(TRI->getFramePtr());
+  if (TRI->hasBasePointer(MF))
+    StackRegs.insert(TRI->getBaseRegister());
+
+
+  const auto add_info = [&Infos] (AccessInfo::AccessMode Mode, AccessInfo::AccessKind Kind, const auto& AddrRegs) {
+    AccessInfo Info;
+    Info.Mode = Mode;
+    Info.Kind = Kind;
+    Info.AddrRegs = AddrRegs;
+    Infos.push_back(Info);
+  };
+  const SmallSet<Register, 2> NoAddrRegs;
+
+  // Compute memory reference registers.
+  std::optional<AccessInfo::AccessKind> MemRefKind;
+  SmallSet<Register, 2> MemRefAddrRegs;
+  const int MemRefIdx = getMemRefBeginIdx(MI);
+  if (MemRefIdx >= 0) {
+    const MachineOperand& BaseMO = MI.getOperand(MemRefIdx + X86::AddrBaseReg);
+    const MachineOperand& IndexMO = MI.getOperand(MemRefIdx + X86::AddrIndexReg);
+    assert((BaseMO.isReg() || IndexMO.isReg()) && "At least one of base and index addrs must be registers!");
+    
+    if (BaseMO.isReg()) {
+      const Register BaseReg = BaseMO.getReg();
+      if (BaseReg == X86::NoRegister || BaseReg == X86::RIP) {
+	MemRefKind = AccessInfo::Global;
+      } else if (StackRegs.contains(BaseReg)) {
+	MemRefKind = AccessInfo::Stack;
+      } else {
+	MemRefAddrRegs.insert(BaseReg);
+	MemRefKind = AccessInfo::Nca;
+      }
+    } else if (BaseMO.isFI()) {
+      MemRefKind = AccessInfo::Stack;
+    } else if (BaseMO.isGlobal() || BaseMO.isSymbol()) {
+      MemRefKind = AccessInfo::Global;
+    } else {
+      llvm_unreachable("Unhandled operand!");
+    }
+
+    if (IndexMO.isReg()) {
+      const Register IndexReg = IndexMO.getReg();
+      assert((!StackRegs.contains(IndexReg) && IndexReg != X86::RIP) && "Unexpected index register!");
+      if (IndexReg != X86::NoRegister) {
+	MemRefAddrRegs.insert(IndexReg);
+	MemRefKind = AccessInfo::Nca;
+      }
+    } else if (MemRefKind != AccessInfo::Nca) {
+      llvm_unreachable("Unhandled case!");
+    }
+
+    assert(MemRefKind >= 0 && "MemRefKind unset!");
+  }
+
+  const auto add_memref = [&] (AccessInfo::AccessMode Mode) {
+    assert(MemRefIdx >= 0 && "Calling add_memref without memory reference!");
+    AccessInfo Info;
+    Info.Mode = Mode;
+    Info.Kind = *MemRefKind;
+    Info.AddrRegs = MemRefAddrRegs;
+  };
+  
+
+  switch (Opcode) {
+  // These instructions don't actually access memory.
+  case X86::TRAP:
+  case X86::INLINEASM:
+  case X86::MFENCE:
+  case X86::LFENCE:
+    return;
+
+  case X86::PUSH64r:
+    add_info(AccessInfo::Store, AccessInfo::Stack, NoAddrRegs);
+    return;
+
+  case X86::POP64r:
+    add_info(AccessInfo::Load, AccessInfo::Stack, NoAddrRegs);
+    break;
+
+  case X86::MOV64rm:
+    add_memref(AccessInfo::Load);
+    return;
+
+  case X86::MOV8mi:
+  case X86::MOV32mr:
+  case X86::MOV64mr:
+  case X86::MOVSDmr:
+    add_memref(AccessInfo::Store);
+    break;
+    
+  default:
+    WithColor::error() << __FILE__ << ":" << __LINE__ << ": unhandled instruction: "; MI.print(errs());
+    std::exit(1);
+  }
+}
+
+#if 0
+
+using LK = MachineInstr::LoadKind;
+LK llvm::X86::classifyLoad(const MachineInstr& MI) {
+  const auto *TII = MI.getMF()->getSubtarget().getInstrInfo();
+  const unsigned Opcode = MI.getOpcode();
+  
+  if (!MI.mayLoad() || Opcode == X86::TRAP)
+    return LK::None;
+
+  if (Opcode == X86::INLINEASM) {
+    LLVM_DEBUG(dbgs() << "  Skipping inline assembly that may load: ";
+	       MI.dump());
+    return LK::None;
+  }
+
+  if (Opcode == X86::MFENCE || Opcode == X86::LFENCE)
+    return LK::None;
+
+  if (MI.isIndirectBranch())
+    return LK::Nca;
+
+  assert(!MI.getFlag(MachineInstr::FrameSetup) && "Not expecting loads in frame setup!");
+
+  // Check if it's an epilogue store.
+  if (MI.getFlag(MachineInstr::FrameDestroy)) {
+    assert(!hasMemRef(MI) && "Not expecting loads to have memory reference operand in frame destroy!");
+    return LK::Epilogue;
+  }
+
+  // Check if there is NCA load.
+  const int MemRef = getMemRefBeginIdx(MI);
+  if (MemRef >= 0) {
+    // Check
+    const unsigned UnfoldOpcode =
+      TII->getOpcodeAfterMemoryUnfold(MI.getOpcode(), /*unfoldLoad*/true, /*unfoldStore*/false, nullptr);
+    if (UnfoldOpcode && hasMemRef(TII->get(UnfoldOpcode))) {
+      // Then the memory ref is from something else, like a store.
+      // Thus we expect this is a POP64rmm instruction.
+      if (UnfoldOpcode == X86::POP64r)
+	return LK::CaStack;
+      llvm_unreachable("don't know how to handle this load instruction");
+    }
+
+    
+    // Otherwise, the memory reference belongs to the load, and we need to analyze it.
+    const MachineOperand& BaseMO = MI.getOperand(MemRef + X86::AddrBaseReg);
+    const MachineOperand& IndexMO = MI.getOperand(MemRef + X86::AddrIndexReg);
+    if (BaseMO.isReg()) {
+      const Register BaseReg = BaseMO.getReg();
+      if (BaseReg != X86::NoRegister && BaseReg != X86::RIP)
+	return LK::Nca;
+    }
+    
+    assert(IndexMO.isReg() && "Don't know how to handle non-reg index register in memory reference!");
+    const Register IndexReg = BaseMO.getReg();
+    if (IndexReg != X86::NoRegister)
+      return LK::Nca;
+
+    if (BaseMO.isFI()) {
+      return LK::CaStack;
+    }
+
+    assert(BaseMO.isReg() && "Only registers should be the base at this point!");
+    
+    // if (BaseMO.isGlobal() || BaseMO.isSymbol())
+    // return LK::CaGlobal;
+    const Register BaseReg = BaseMO.getReg();
+    assert((BaseReg == X86::NoRegister || BaseReg == X86::RIP) && "Expected a global load here!");
+    return LK::CaGlobal;
+  }
+
+  switch (Opcode) {
+  case X86::TAILJMPm64:
+    return LK::Nca;
+  }
+
+  // No memory reference and is a load.
+  llvm_unreachable("Don't know how to handle this load without a memory reference!");
+}
+
+#if 0
+using SK = MachineInstr::StoreKind;
+SK llvm::X86::classifyStore(const MachineInstr& MI) {
+  const auto *TII = MI.getMF()->getSubtarget().getInstrInfo();
+
+  if (!MI.mayStore())
+    return SK::None;
+
+  assert(!MI.getFlag(MachineInstr::FrameDestroy) && "Not expecting stores in frame destroy!");
+
+  // Check if it's a prologue store.
+  if (MI.getFlag(MachineInstr::FrameSetup)) {
+    assert(!hasMemRef(MI) && "Not expecting stores to have memory reference operands in frame setup!");
+    return SK::Prologue;
+  }
+
+  // Check if there is NCA store.
+  const int MemRef = getMemRefBeginIdx(MI);
+  if (MmeRef >= 0) {
+    const unsigned UnfoldOpcode =
+      TII->getOpcodeAfterMemoryUnfold(X86::
+  }
+}
+#endif
+
+
+
+#if 0
+MachineInstr::StFlags_t llvm::X86::getDefaultStoreFlags(const MachineInstr& MI) {
+  if (!MI.mayStore())
+    return MachineInstr::StNoFlags;
+
+  const auto *TII = MI.getMF()->getSubtarget().getInstrInfo();
+
+  // Frame setup stores (callee-saved regs, push rbp, etc.)
+  // FIXME: Does this include initialization stack stores? Probably not.
+  if (MI.getFlag(MachineInstr::FrameSetup)) {
+    assert(!hasMemRef(MI) && "Frame setup instructions generally shouldn't have memory references!");
+    // NOTE: We always assume that we're storing a secret. This is a safe and conservative assumption.
+    return MachineInstr::StEnable | MachineInstr::StSsbd | MachineInstr::StStrict | MachineInstr::StSecret;
+  }
+  
+  int MemIdx = getMemRefIdx(MI);  
+  if (!MemIdx) {
+    // Not sure how to handle these yet.
+    // Trap and fix approach.
+    MI.dump();
+    llvm_unreachable("no memory reference in non-frame-setup instruction");
+  }
+
+  // Check if the memory reference is a stack store.
+
+  MachineInstr::StFlags_t Flags; 
+  if (isNcaMemRef(MI, MemIdx))
+    Flags |= MachineInstr::StNca;
+  Flags |= MachineInstr::StSecret;
+    
+
+  
+  // Other stack stores. We assume they are public (though this may change).
+  
+}
+
+
+MachineInstr::flags_t llvm::X86::getDefaultAccessFlags(const MachineInstr& MI) {
+  const auto *TII = MI.getMF()->getSubtarget().getInstrInfo();
+  
+  MachineInstr::flags_t Flags = MachineInstr::NoFlags;
+
+  if (MI.mayStore()) {
+    // Frame loads.
+    if (MI.getFlag(MachineInstr::FrameSetup)) {
+      assert(!hasMemRef(MI) && "Frame setup instructions generally shouldn't have memory references!");
+      Flags |= MachineInstr::StEnable | MachineInstr::StSsbd | MachineInstr::StClass;
+    }
+    
+    // Strict requirement for all frame stores.
+    if (MI.getFlag(MachineInstr::FrameSetup))
+      Flags |= MachineInstr::StEnable | MachineInstr::StSsbd | MachineInstr::StClass;
+
+    // Check if NCA. This might have false positives, but no false negatives.
+    
+      
+    
+    static const int PushOpcodes[] = 
+    
+    if (MI.getOpcode() == X86::PUSH64r) {
+  }
+
+  if (MI.mayStore()) {
+    
+  }
+
+  return Flags;
+}
+#endif
+#endif
+  
+
+INITIALIZE_PASS_BEGIN(X86LLSCT, PASS_KEY "-pass",
 		      "X86 LLSCT pass", false, false)
-INITIALIZE_PASS_END(X86LLSCT, PASS_KEY,
+INITIALIZE_PASS_END(X86LLSCT, PASS_KEY "-pass",
 		    "X86 LLSCT pass", false, false)
 
 FunctionPass *llvm::createX86LLSCTPass() {

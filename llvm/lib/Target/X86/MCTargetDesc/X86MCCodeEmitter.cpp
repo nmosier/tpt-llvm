@@ -1280,6 +1280,10 @@ bool X86MCCodeEmitter::emitOpcodePrefix(int MemOperand, const MCInst &MI,
   if (TSFlags & X86II::NOTRACK || MI.getFlags() & X86::IP_HAS_NOTRACK)
     emitByte(0x3E, OS);
 
+  // Emit the NOSPEC opcode prefix.
+  if (TSFlags & X86II::NOSPEC || MI.getFlags() & X86::IP_HAS_NOSPEC)
+    emitByte(0x26, OS);
+
   switch (TSFlags & X86II::OpPrefixMask) {
   case X86II::PD: // 66
     emitByte(0x66, OS);
