@@ -89,7 +89,9 @@ namespace {
       bool operator!=(const SplitNode& o) const { return tuple() != o.tuple(); }
     };
     using DFGNode2 = std::variant<SuperSource, SuperSink, SplitNode>;
-    using Graph = std::map<DFGNode2, std::map<DFGNode2, int>>;
+    using Index = unsigned;
+    using Weight = int;
+    using Graph = std::vector<std::map<Index, Weight>>;
   public:
     void add_edge(const DFGNode& src, const DFGNode& dst) {
       add_node(src);
@@ -129,6 +131,7 @@ namespace {
       return std::visit(Valid(), node);
     }
   public:
+#if 0
     void prune() {
       for (auto it = sources.begin(); it != sources.end(); ) {
 	if (it->valid()) {
@@ -159,40 +162,60 @@ namespace {
 	}
       }
     }
+#endif
   private:
     Graph graph;
     std::set<DFGNode> sources;
     std::set<DFGNode> sinks;
+    std::map<DFGNode2, Index> node_to_index;
+    std::vector<DFGNode2> index_to_node;
 
-    void add_edge2(const DFGNode2& src, const DFGNode2& dst, int w) {
-      graph[src][dst] = w;
+    size_t getNumNodes() const {
+      return index_to_node.size(); }
+    
+
+    Index add_node2(const DFGNode2& node) {
+      const auto it = node_to_index.emplace(node, getNumNodes());
+      if (it.second) {
+	index_to_node.push_back(node);
+	graph.emplace_back();
+      }
+      return it.first->second;
     }
 
-    bool bfs(Graph& R, const DFGNode2& s, const DFGNode2& t, std::map<DFGNode2, DFGNode2>& parent) {
+    void add_edge2(const DFGNode2& src, const DFGNode2& dst, int w) {
+      const Index src2 = add_node2(src);
+      const Index dst2 = add_node2(dst);
+      graph[src2][dst2] = w;
+    }
+
+    bool bfs(Graph& R, Index s, Index t, std::vector<Index>& parent) {
       parent.clear();
-      std::set<DFGNode2> visited;
-      std::queue<DFGNode2> q;
+      parent.resize(getNumNodes(), -1);
+      std::vector<bool> visited(getNumNodes(), false);
+      std::queue<Index> q;
       q.push(s);
-      visited.insert(s);
+      visited[s] = true;
 
       while (!q.empty()) {
-	DFGNode2 u = q.front();
+	const Index u = q.front();
 	q.pop();
 	for (const auto& [v, w] : R[u]) {
-	  if (visited.insert(v).second && w > 0) {
+	  if (!visited[v] && w > 0) {
+	    visited[v] = true;
 	    q.push(v);
 	    parent[v] = u;
 	  }
 	}
       }
 
-      return visited.find(t) != visited.end();
+      return visited[t];
     }
 
-    void dfs(Graph& R, const DFGNode2& s, std::set<DFGNode2>& visited) {
-      visited.insert(s);
+    void dfs(Graph& R, Index s, std::vector<bool>& visited) {
+      visited[s] = true;
       for (const auto& [i, w] : R[s]) {
-	if (w > 0 && visited.find(i) == visited.end())
+	if (w > 0 && !visited[i])
 	  dfs(R, i, visited);
       }
     }
@@ -202,33 +225,34 @@ namespace {
       auto& G = graph;
       Graph R = G;
 
-      const DFGNode2 s = SuperSource();
-      const DFGNode2 t = SuperSink();
+      const Index s = add_node2(SuperSource());
+      const Index t = add_node2(SuperSink());
 
-      std::map<DFGNode2, DFGNode2> parent;
+      std::vector<Index> parent(getNumNodes(), -1);
       while (bfs(R, s, t, parent)) {
 	int path_flow = INT_MAX;
-	for (DFGNode2 v = t; v != s; v = parent.at(v)) {
-	  DFGNode2 u = parent.at(v);
+	for (auto v = t; v != s; v = parent.at(v)) {
+	  auto u = parent.at(v);
+	  assert(u != (Index) -1);
 	  path_flow = std::min(path_flow, R[u][v]);
 	}
-	for (DFGNode2 v = t; v != s; v = parent.at(v)) {
-	  DFGNode2 u = parent.at(v);
+	for (auto v = t; v != s; v = parent.at(v)) {
+	  auto u = parent.at(v);
+	  assert(u != (Index) -1);
 	  R[u][v] -= path_flow;
 	  R[v][u] += path_flow;
 	}
       }
 
-      std::set<DFGNode2> visited;
+      std::vector<bool> visited(getNumNodes(), false);
       dfs(R, s, visited);
 
       std::set<std::pair<DFGNode2, DFGNode2>> cut_edges;
-      for (const auto& [src, dsts] : G) {
+      for (Index src = 0; src < getNumNodes(); ++src) {
+	const auto& dsts = G[src];
 	for (const auto& [dst, w] : dsts) {
-	  if (G[src][dst] > 0 &&
-	      visited.find(src) != visited.end() &&
-	      visited.find(dst) == visited.end()) {
-	    cut_edges.emplace(src, dst);
+	  if (G[src][dst] > 0 && visited[src] && !visited[dst]) {
+	    cut_edges.emplace(index_to_node.at(src), index_to_node.at(dst));
 	  }
 	}
       }
@@ -451,7 +475,7 @@ namespace {
 
       // Now, do min cut.
       std::set<DFGNode> cut_nodes;
-      dfg.prune();
+      // dfg.prune();
       dfg.min_cut(cut_nodes);
 
       bool changed = false;
