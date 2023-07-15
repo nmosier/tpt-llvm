@@ -45,17 +45,24 @@ namespace {
   }  
 
   struct DFGNode {
-    MachineInstr *MI;
+    PointerUnion<MachineInstr *, MachineBasicBlock *> Loc;
     enum Point {BEFORE, AFTER} Pt;
     Register Reg;
 
-    auto tuple() const { return std::make_tuple(MI, Pt, Reg); }
+    DFGNode(MachineInstr *MI, Point Pt, Register Reg): Loc(MI), Pt(Pt), Reg(Reg) {}
+    DFGNode(MachineBasicBlock *MBB, Point Pt, Register Reg): Loc(MBB), Pt(Pt), Reg(Reg) {}
+
+    bool isMI() const { return Loc.is<MachineInstr *>(); }
+    MachineInstr& getMI() const { assert(isMI()); return *Loc.get<MachineInstr *>(); }
+    bool isMBB() const { return Loc.is<MachineBasicBlock *>(); }
+    MachineBasicBlock& getMBB() const { assert(isMBB()); return *Loc.get<MachineBasicBlock *>(); }
+    
+    auto tuple() const { return std::make_tuple(Loc, Pt, Reg); }
     bool operator<(const DFGNode& o) const { return tuple() < o.tuple(); }
     bool operator==(const DFGNode& o) const { return tuple() == o.tuple(); }
     bool operator!=(const DFGNode& o) const { return tuple() != o.tuple(); }
 
     bool valid() const {
-      assert(MI != nullptr);
       return Reg != X86::NoRegister;
     }
   };
@@ -89,14 +96,20 @@ namespace {
       add_node(dst);
       add_edge2(SplitNode(src, SplitNode::OUT), SplitNode(dst, SplitNode::IN), INT_MAX);
     }
+  private:
+    int compute_node_weight(const DFGNode& node) {
+      if (node.isMBB())
+	return INT_MAX;
+      assert(node.isMI());
+      if (node.getMI().isTerminator() && node.Pt == DFGNode::AFTER)
+	return INT_MAX;
+      return 1;
+    }
+  public:
     void add_node(const DFGNode& node) {
-      int w;
-      if (node.MI->isTerminator() && node.Pt == DFGNode::AFTER) {
-	w = INT_MAX;
-      } else {
-	w = 1;
-      }
-      add_edge2(SplitNode(node, SplitNode::IN), SplitNode(node, SplitNode::OUT), w);
+      add_edge2(SplitNode(node, SplitNode::IN),
+		SplitNode(node, SplitNode::OUT),
+		compute_node_weight(node));
     }
     void add_source(const DFGNode& source) {
       sources.insert(source);
@@ -253,6 +266,18 @@ namespace {
       return regs;
     }
 
+    void getSuccessors(MachineBasicBlock& MBB, SmallVectorImpl<MachineBasicBlock *>& Succs, std::set<MachineBasicBlock *>& seen) {
+      if (!seen.insert(&MBB).second)
+	return;
+      for (MachineBasicBlock *Succ : MBB.successors()) {
+	if (Succ->empty()) {
+	  getSuccessors(*Succ, Succs, seen);
+	} else {
+	  Succs.push_back(Succ);
+	}
+      }
+    }
+
     Register legalizeRegister(Register Reg) const {
       const Register SuperReg = getX86SubSuperRegisterOrZero(Reg, 64);
       if (regs.find(SuperReg) != regs.end()) {
@@ -316,42 +341,29 @@ namespace {
       if (!EnableProtectPass)
 	return false;
 
+      errs() << "Running Protect on " << MF.getName() << " (" << MF.getInstructionCount() << ")\n";
+
       auto *TII = MF.getSubtarget().getInstrInfo();
       
       DFG dfg;
+
+      Register LegalReg;
 
       // Add taint primitives
       {
       
 	/// Add arguments as sources
-	{
-	  for (const auto& [Reg, _] : MF.front().liveins()) {
-	    DFGNode node;
-	    node.MI = &MF.front().front();
-	    node.Pt = DFGNode::BEFORE;
-	    node.Reg = Reg;
-	    dfg.add_source(node);
-	  }
-	}
+	for (const auto& [Reg, _] : MF.front().liveins())
+	  if ((LegalReg = legalizeRegister(Reg)) != X86::NoRegister)
+	    dfg.add_source(DFGNode(&MF.front(), DFGNode::BEFORE, LegalReg));
 
 	/// Add NCA loads as sources
-	{
-	  for (MachineBasicBlock& MBB : MF) {
-	    for (MachineInstr& MI : MBB) {
-	      if (MI.mayLoad() && isNCA(MI)) {
-		for (MachineOperand& MO : MI.operands()) {
-		  if (MO.isReg() && MO.isUse()) {
-		    DFGNode node;
-		    node.MI = &MI;
-		    node.Pt = DFGNode::AFTER;
-		    node.Reg = legalizeRegister(MO.getReg());
-		    dfg.add_source(node);
-		  }
-		}
-	      }
-	    }
-	  }
-	}
+	for (MachineBasicBlock& MBB : MF)
+	  for (MachineInstr& MI : MBB)
+	    if (MI.mayLoad() && isNCA(MI))
+	      for (MachineOperand& MO : MI.operands())
+		if (MO.isReg() && MO.isUse() && (LegalReg = legalizeRegister(MO.getReg())) != X86::NoRegister)
+		  dfg.add_source(DFGNode(&MI, DFGNode::AFTER, LegalReg));
 
       }
 
@@ -362,66 +374,46 @@ namespace {
 	  for (MachineInstr& MI : MBB) {
 	    SmallVector<Register> LeakedRegs;
 	    getSensitiveOperands(MI, LeakedRegs);
-	    for (Register Reg : LeakedRegs) {
-	      DFGNode node;
-	      node.MI = &MI;
-	      node.Pt = DFGNode::BEFORE;
-	      node.Reg = legalizeRegister(Reg);
-	      dfg.add_sink(node);
-	    }
+	    for (Register Reg : LeakedRegs)
+	      if ((LegalReg = legalizeRegister(Reg)) != X86::NoRegister)
+		dfg.add_sink(DFGNode(&MI, DFGNode::BEFORE, LegalReg));
 	  }
 	}
 
 	// Pseudo-transmitters (CA stores)
-	for (MachineBasicBlock& MBB : MF) {
-	  for (MachineInstr& MI : MBB) {
-	    if (MI.mayStore() && !isNCA(MI)) {
-	      for (const MachineOperand& MO : MI.operands()) {
-		if (MO.isReg() && MO.isUse()) {
-		  DFGNode node;
-		  node.MI = &MI;
-		  node.Pt = DFGNode::BEFORE;
-		  node.Reg = legalizeRegister(MO.getReg());
-		  dfg.add_sink(node);
-		}
-	      }
-	    }
-	  }
-	}
+	for (MachineBasicBlock& MBB : MF)
+	  for (MachineInstr& MI : MBB)
+	    if (MI.mayStore() && !isNCA(MI))
+	      for (const MachineOperand& MO : MI.operands())
+		if (MO.isReg() && MO.isUse() && (LegalReg = legalizeRegister(MO.getReg())) != X86::NoRegister)
+		  dfg.add_sink(DFGNode(&MI, DFGNode::BEFORE, LegalReg));
       }
 
       // Add inter-instruction data-flow edges
       {
 	for (Register Reg : getAllRegisters()) {
 	  for (MachineBasicBlock& MBB : MF) {
+	    if (MBB.empty())
+	      continue;
+	    
 	    // Intra-block edges
 	    for (auto MBBI = MBB.begin(); std::next(MBBI) != MBB.end(); ++MBBI) {
-	      DFGNode src;
-	      src.MI = &*MBBI;
-	      src.Pt = DFGNode::AFTER;
-	      src.Reg = Reg;
-
-	      DFGNode dst;
-	      dst.MI = &*std::next(MBBI);
-	      dst.Pt = DFGNode::BEFORE;
-	      dst.Reg = Reg;
-	      
-	      dfg.add_edge(src, dst);
+	      dfg.add_edge(DFGNode(&*MBBI, DFGNode::AFTER, Reg),
+			   DFGNode(&*std::next(MBBI), DFGNode::BEFORE, Reg));
 	    }
+
+	    // Entry-to-front edge
+	    dfg.add_edge(DFGNode(&MBB, DFGNode::BEFORE, Reg),
+			 DFGNode(&MBB.front(), DFGNode::BEFORE, Reg));
+
+	    // Back-to-exit edge
+	    dfg.add_edge(DFGNode(&MBB.back(), DFGNode::AFTER, Reg),
+			 DFGNode(&MBB, DFGNode::AFTER, Reg));
 	    
 	    // Inter-block edges
 	    for (MachineBasicBlock *SuccMBB : MBB.successors()) {
-	      DFGNode src;
-	      src.MI = &MBB.back();
-	      src.Pt = DFGNode::AFTER;
-	      src.Reg = Reg;
-
-	      DFGNode dst;
-	      dst.MI = &SuccMBB->front();
-	      dst.Pt = DFGNode::BEFORE;
-	      dst.Reg = Reg;
-	      
-	      dfg.add_edge(src, dst);
+	      dfg.add_edge(DFGNode(&MBB, DFGNode::AFTER, Reg),
+			   DFGNode(SuccMBB, DFGNode::BEFORE, Reg));
 	    }
 	  }
 	}
@@ -429,34 +421,27 @@ namespace {
 
       // Add intra-instruction data-flow edges
       {
-	DFGNode src;
-	src.Pt = DFGNode::BEFORE;
-	DFGNode dst;
-	dst.Pt = DFGNode::AFTER;
 	for (MachineBasicBlock& MBB : MF) {
 	  for (MachineInstr& MI : MBB) {
-	    dst.MI = src.MI = &MI;
-	    
 	    std::set<Register> Uses;
 	    for (const MachineOperand& MO : MI.operands())
-	      if (MO.isReg() && MO.isUse())
-		Uses.insert(legalizeRegister(MO.getReg()));
+	      if (MO.isReg() && MO.isUse() && (LegalReg = legalizeRegister(MO.getReg())) != X86::NoRegister)
+		Uses.insert(LegalReg);
 	    
 	    std::set<Register> Defs;
 	    for (const MachineOperand& MO : MI.defs())
-	      if (MO.isReg() && MO.isDef())
-		Defs.insert(legalizeRegister(MO.getReg()));
+	      if (MO.isReg() && MO.isDef() && (LegalReg = legalizeRegister(MO.getReg())) != X86::NoRegister)
+		Defs.insert(LegalReg);
 	    
 	    for (Register Def : getAllRegisters()) {
-	      dst.Reg = Def;
 	      if (Defs.find(Def) != Defs.end()) {
 		for (Register Use : Uses) {
-		  src.Reg = Use;
-		  dfg.add_edge(src, dst);
+		  dfg.add_edge(DFGNode(&MI, DFGNode::BEFORE, Use),
+			       DFGNode(&MI, DFGNode::AFTER, Def));
 		}
 	      } else {
-		src.Reg = Def;
-		dfg.add_edge(src, dst);
+		dfg.add_edge(DFGNode(&MI, DFGNode::BEFORE, Def),
+			     DFGNode(&MI, DFGNode::AFTER, Def));
 	      }
 	    }
 	  }
@@ -472,16 +457,18 @@ namespace {
       bool changed = false;
 
       for (const DFGNode& node : cut_nodes) {
+	assert(node.isMI());
+	MachineInstr& MI = node.getMI();
 	MachineBasicBlock::iterator MBBI;
 	switch (node.Pt) {
 	case DFGNode::BEFORE:
-	  MBBI = node.MI->getIterator();
+	  MBBI = MI.getIterator();
 	  break;
 	case DFGNode::AFTER:
-	  MBBI = std::next(node.MI->getIterator());
+	  MBBI = std::next(MI.getIterator());
 	  break;
 	}
-	BuildMI(*node.MI->getParent(), MBBI, DebugLoc(), TII->get(X86::PROTECT64rr), node.Reg)
+	BuildMI(*MI.getParent(), MBBI, DebugLoc(), TII->get(X86::PROTECT64rr), node.Reg)
 	  .addReg(node.Reg);
 	changed = true;
       }
