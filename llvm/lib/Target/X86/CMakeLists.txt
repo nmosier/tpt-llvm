@@ -1,4 +1,5 @@
-add_compile_options(-g -O0) # FIXME: remove this once done debugging
+# add_compile_options(-g -O0) # FIXME: remove this once done debugging
+add_compile_options(-g -O1)
 
 add_llvm_component_group(X86 HAS_JIT)
 
@@ -71,6 +72,7 @@ set(sources
   X86LoadValueInjectionLoadHardening.cpp
   X86LoadValueInjectionRetHardening.cpp
   X86MCInstLower.cpp
+  X86MCInstLowerLLSCT.cpp
   X86MachineFunctionInfo.cpp
   X86MacroFusion.cpp
   X86OptimizeLEAs.cpp
@@ -91,6 +93,8 @@ set(sources
   X86WinEHState.cpp
   X86InsertWait.cpp
   X86LLSCT.cpp
+  X86Protect.cpp
+  X86ReturnHardening.cpp
   )
 
 add_llvm_target(X86CodeGen ${sources}

@@ -47,6 +47,7 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizerCommon.h"
+#include "X86MCInstLowerLLSCT.h"
 #include <string>
 
 using namespace llvm;
@@ -993,6 +994,11 @@ void X86MCInstLower::Lower(const MachineInstr *MI, MCInst &OutMI) const {
     break;
   }
   }
+
+
+  // LLSCT: Propagate MI->MC flags.
+  llsct::X86MCInstLowerLLSCT(MI, OutMI);
+  
 }
 
 void X86AsmPrinter::LowerTlsAddr(X86MCInstLower &MCInstLowering,

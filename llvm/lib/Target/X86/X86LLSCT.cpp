@@ -13,22 +13,30 @@
 #include "llvm/Pass.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/Support/WithColor.h"
+#include "llvm/IR/Value.h"
+#include "llvm/Analysis/ValueTracking.h"
 
 using namespace llvm;
+using namespace llsct;
 
 #define PASS_KEY "llsct"
 #define DEBUG_TYPE PASS_KEY
 
-static cl::opt<bool> EnableLLSCT {
+namespace llsct {
+  bool EnableLLSCT;
+}
+
+static cl::opt<bool, true> EnableLLSCTOpt {
   PASS_KEY,
   cl::desc("Enable LLSCT"),
+  cl::location(llsct::EnableLLSCT),
   cl::init(false),
 };
 
 static cl::opt<bool> EnableLLSCTRet {
   PASS_KEY "-ret",
   cl::desc("Enable LLSCT Return Hardening"),
-  cl::init(true),
+  cl::init(false),
 };
 
 static cl::opt<bool> EnableLLSCTStackInit {
@@ -36,6 +44,20 @@ static cl::opt<bool> EnableLLSCTStackInit {
   cl::desc("Enable LLSCT Stack Initialization"),
   cl::init(true),
 };
+
+namespace llvm::X86 {
+  int getMemRefBeginIdx(const MCInstrDesc& Desc) {
+    int MemRefBeginIdx = X86II::getMemoryOperandNo(Desc.TSFlags);
+    if (MemRefBeginIdx < 0)
+      return -1;
+    MemRefBeginIdx += X86II::getOperandBias(Desc);
+    return MemRefBeginIdx;
+  }
+
+  int getMemRefBeginIdx(const MachineInstr& MI) {
+    return getMemRefBeginIdx(MI.getDesc());
+  }
+}
 
 namespace {
 
@@ -55,24 +77,12 @@ namespace {
 
   char X86LLSCT::ID = 0;
 
-  int getMemRefBeginIdx(const MCInstrDesc& Desc) {
-    int MemRefBeginIdx = X86II::getMemoryOperandNo(Desc.TSFlags);
-    if (MemRefBeginIdx < 0)
-      return -1;
-    MemRefBeginIdx += X86II::getOperandBias(Desc);
-    return MemRefBeginIdx;
-  }
-
-  int getMemRefBeginIdx(const MachineInstr& MI) {
-    return getMemRefBeginIdx(MI.getDesc());
-  }
-
   bool hasMemRef(const MCInstrDesc& Desc) {
-    return getMemRefBeginIdx(Desc) >= 0;
+    return X86::getMemRefBeginIdx(Desc) >= 0;
   }
 
   bool hasMemRef(const MachineInstr& MI) {
-    return getMemRefBeginIdx(MI) >= 0;
+    return X86::getMemRefBeginIdx(MI) >= 0;
   }
 
   // InsertPt points to one past the call.
@@ -183,6 +193,7 @@ namespace {
     uint64_t Bytes;
     unsigned Offset;
     const MachineInstr *Load;
+    const MachineMemOperand *MemOp;
   };
 
   bool stackInit(MachineFunction& MF) {
@@ -193,38 +204,60 @@ namespace {
     
     for (MachineBasicBlock& MBB : MF) {
       for (MachineInstr& MI : MBB) {
+	// Only considering stack memory constant-addressed by loads.
 	if (!MI.mayLoad())
 	  continue;
-	const int Idx = getMemRefBeginIdx(MI);
-	if (Idx >= 0) {
-	  // FIXME: Extract to 'is CA stack access' function.
-	  // Check if frame index.
-	  const MachineOperand& Base = MI.getOperand(Idx + X86::AddrBaseReg);
-	  if (!Base.isFI())
+
+	// Check for single memory operand.
+	// Otherwise we bail for now.
+	if (!MI.hasOneMemOperand())
+	  continue;
+
+	const MachineMemOperand *MMO = MI.memoperands()[0];
+	const Value *Ptr = MMO->getValue();
+	if (!Ptr)
+	  continue;
+
+	// Check if it's a stack access.
+	{
+	  int64_t AllocOffset;
+	  const DataLayout DL(MF.getFunction().getParent());
+	  const Value *BasePtr = GetPointerBaseWithConstantOffset(Ptr, AllocOffset, DL);
+	  if (!(BasePtr && isa<AllocaInst>(BasePtr)))
 	    continue;
-	  
-	  // Check if constant-address (i.e., index operand is noregister).
-	  assert(MI.getOperand(Idx + X86::AddrScaleAmt).getImm() > 0 && "Bad scale amount!");
-	  if (MI.getOperand(Idx + X86::AddrIndexReg).getReg() != X86::NoRegister)
-	    continue;
-	  
-	  StackSlot slot;
-	  slot.FrameIdx = Base.getIndex();
-	  if (slot.FrameIdx < 0)
-	    continue;
-	  slot.Bytes = 0;
-	  for (const MachineMemOperand *MMO : MI.memoperands())
-	    slot.Bytes = std::max(slot.Bytes, MMO->getSize());
-	  const auto Offset = MI.getOperand(Idx + X86::AddrDisp).getImm();
-	  assert(Offset >= 0 && "Negative offsets aren't allowed for stack slots!");
-	  slot.Offset = static_cast<unsigned>(Offset);
-	  slot.Load = &MI;
-	  slots.push_back(slot);
 	}
+	
+	const int Idx = X86::getMemRefBeginIdx(MI);
+	assert(Idx >= 0 && "Expect a nonnegative mem ref index begin for IR-visible stack accesses!");
+	const MachineOperand& Base = MI.getOperand(Idx + X86::AddrBaseReg);
+	if (!Base.isFI()) {
+	  auto& os = WithColor::warning() << __FILE__ << ":" << __LINE__ << ": skipping CA stack load with non-FI base operand: ";
+	  MI.print(os);
+	  continue;
+	}
+
+	assert(Base.isFI() && "Expect frame index for address base!");
+	assert(MI.getOperand(Idx + X86::AddrScaleAmt).getImm() > 0 && "Bad scale amount!");
+	assert(MI.getOperand(Idx + X86::AddrIndexReg).getReg() == X86::NoRegister && "Have an index register in a CA stack access!");
+
+	StackSlot slot;
+	slot.FrameIdx = Base.getIndex();
+
+	// Don't handle arguments passed on the stack for now. We should figure out how to handle this later, though.
+	if (slot.FrameIdx < 0)
+	  continue;
+
+	slot.Bytes = MMO->getSize();
+	const auto Offset = MI.getOperand(Idx + X86::AddrDisp).getImm();
+	assert(Offset >= 0 && "Negative offsets aren't allowed for stack slots!");
+	slot.Offset = static_cast<unsigned>(Offset);
+	slot.Load = &MI;
+	slot.MemOp = MMO;
+	slots.push_back(slot);
       }
     }
-
-    // Insert initializations
+    
+    // Insert initializations and set flags appropriately.
     MachineBasicBlock& Entry = MF.front();
     auto InsertPt = Entry.begin();
     DebugLoc Loc;
@@ -246,19 +279,67 @@ namespace {
 	WithColor::warning() << "unexpected frame index size " << Slot.Bytes << " in load: " << *Slot.Load;
 	continue;
       }
-      BuildMI(Entry, InsertPt, Loc, TII->get(Opcode))
+      MachineInstr& MI = *BuildMI(Entry, InsertPt, Loc, TII->get(Opcode))
 	.addFrameIndex(Slot.FrameIdx)
 	.addImm(1)
 	.addReg(X86::NoRegister)
 	.addImm(Slot.Offset)
 	.addReg(X86::NoRegister)
-	.addImm(0);
+	.addImm(0)
+	.addMemOperand(MF.getMachineMemOperand(Slot.MemOp, Slot.MemOp->getFlags() | static_cast<MachineMemOperand::Flags>(X86::AcSsbd)));
+      
       changed = true;
     }
 
     return changed;
   }
 
+
+#if 0
+  bool annotateIndirectAddressible(MachineFunction& MF) {
+    bool changed = false;
+
+    // Simply mark all IR-visible constant-address stack accesses as indirect-addressible.
+    // We can have a more intelligent and performant version of this later on.
+
+    for (MachineBasicBlock& MBB : MF) {
+      for (MachineInstr& MI : MBB) {
+	if (!MI.mayLoadOrStore())
+	  continue;
+
+	// For now, only handle instructions with <= 1 memory operand.
+	if (MI.getNumMemOperands() > 1)
+	  continue;
+
+	if (MI.getNumMemOperands() == 0) {
+	  const int Idx = X86::getMemRefBeginIdx(MI);
+	  assert(Idx < 0 && "We expect there to be a memory operand accompanying a memory ref!");
+	  assert(MI.hasRegisterImplicitUseOperand(X86::RSP) && "Expect there to be an implicit access of the stack!");
+	  continue;
+	}
+
+	MachineMemOperand *MMO = MI.memoperands()[0];
+
+	const Value *Ptr = MMO->getValue();
+	if (!Ptr)
+	  continue;
+
+	{
+	  int64_t AllocOffset;
+	  const DataLayout DL(MF.getFunction().getParent());
+	  const Value *BasePtr = GetPointerBaseWithConstantOffset(Ptr, AllocOffset, DL);
+	  if (!(BasePtr && isa<AllocaInst>(BasePtr)))
+	    continue;
+	}
+
+	MMO->setFlags(static_cast<MachineMemOperand::Flags>(X86::AcIndAddr));
+      }
+    }
+    
+
+    return changed;
+  }
+#endif
 
   StringRef getInstrName(const MachineInstr& MI) {
     const MCInstrInfo *MII = MI.getMF()->getSubtarget().getInstrInfo();
@@ -299,6 +380,12 @@ namespace {
     if (!EnableLLSCT)
       return false;
 
+#if 0
+    for (BasicBlock& B : MF.getFunction()) {
+      [[maybe_unused]] volatile std::string s = static_cast<Value *>(&B)->getNameOrAsOperand();
+    }
+#endif
+
     // Populate SSBD flag.
     
     bool changed = false;
@@ -306,6 +393,10 @@ namespace {
       changed |= hardenPostCalls(MF);
     if (EnableLLSCTStackInit)
       changed |= stackInit(MF);
+#if 0
+    if (EnableLLSCTIndAddr)
+      changed |= annotateIndirectAddressible(MF);
+#endif
 
     // Protect test
 #if 0
@@ -377,7 +468,7 @@ MachineInstr::LdFlags_t llvm::X86::getDefaultLoadFlags_Nca() {
 #endif
 
 
-
+#if 0
 void llvm::X86::getAccessInfo(const MachineInstr& MI, SmallVectorImpl<AccessInfo>& Infos) {
   const MachineFunction& MF = *MI.getMF();
   const auto *TRI = MF.getSubtarget<X86Subtarget>().getRegisterInfo();
@@ -409,7 +500,7 @@ void llvm::X86::getAccessInfo(const MachineInstr& MI, SmallVectorImpl<AccessInfo
   // Compute memory reference registers.
   std::optional<AccessInfo::AccessKind> MemRefKind;
   SmallSet<Register, 2> MemRefAddrRegs;
-  const int MemRefIdx = getMemRefBeginIdx(MI);
+  const int MemRefIdx = X86::getMemRefBeginIdx(MI);
   if (MemRefIdx >= 0) {
     const MachineOperand& BaseMO = MI.getOperand(MemRefIdx + X86::AddrBaseReg);
     const MachineOperand& IndexMO = MI.getOperand(MemRefIdx + X86::AddrIndexReg);
@@ -488,6 +579,7 @@ void llvm::X86::getAccessInfo(const MachineInstr& MI, SmallVectorImpl<AccessInfo
     std::exit(1);
   }
 }
+#endif
 
 #if 0
 
@@ -520,7 +612,7 @@ LK llvm::X86::classifyLoad(const MachineInstr& MI) {
   }
 
   // Check if there is NCA load.
-  const int MemRef = getMemRefBeginIdx(MI);
+  const int MemRef = X86::getMemRefBeginIdx(MI);
   if (MemRef >= 0) {
     // Check
     const unsigned UnfoldOpcode =
@@ -587,7 +679,7 @@ SK llvm::X86::classifyStore(const MachineInstr& MI) {
   }
 
   // Check if there is NCA store.
-  const int MemRef = getMemRefBeginIdx(MI);
+  const int MemRef = X86::getMemRefBeginIdx(MI);
   if (MmeRef >= 0) {
     const unsigned UnfoldOpcode =
       TII->getOpcodeAfterMemoryUnfold(X86::

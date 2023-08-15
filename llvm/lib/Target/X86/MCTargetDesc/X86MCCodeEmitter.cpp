@@ -1284,6 +1284,19 @@ bool X86MCCodeEmitter::emitOpcodePrefix(int MemOperand, const MCInst &MI,
   if (TSFlags & X86II::NOSPEC || MI.getFlags() & X86::IP_HAS_NOSPEC)
     emitByte(0x26, OS);
 
+  // Emit the SSBD opcode prefix.
+#if 0
+  if (MI.getFlags() & X86::IP_HAS_SSBD) {
+    emitByte(0x2E, OS);
+  }
+  // LLSCT FIXME: disabled this just for testing
+#endif
+
+  // Emit the INDADDR opcode prefix.
+  if (MI.getFlags() & X86::IP_HAS_INDADDR) {
+    emitByte(0x36, OS);
+  }
+
   switch (TSFlags & X86II::OpPrefixMask) {
   case X86II::PD: // 66
     emitByte(0x66, OS);

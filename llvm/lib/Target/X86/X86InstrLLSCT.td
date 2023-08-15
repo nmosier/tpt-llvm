@@ -1,6 +1,7 @@
-// def SDTX86Protect : SDTypeProfile<1, 1, []>;
+def SDTX86Protect : SDTypeProfile<1, 1, []>;
 
 // def int_x86_protect : SDNode<"X86ISD::PROTECT", SDTX86Protect>;
+// def X86protect : SDNode<"X86ISD::PROTECT", SDTX86Protect>;
 
 let SchedRW = [WriteMove], isCodeGenOnly = 1 in {
 // let isMoveReg = 1 in {

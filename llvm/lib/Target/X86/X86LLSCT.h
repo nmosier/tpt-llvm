@@ -1,99 +1,26 @@
-#ifndef LLVM_LIB_TARGET_X86_X86LLSCT_H
-#define LLVM_LIB_TARGET_X86_X86LLSCT_H
+#pragma once
 
 #include <cstdint>
 
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineMemOperand.h"
 
-namespace llvm {
+// TODO: Move to llsct namespace?
+namespace llsct {
+  extern bool EnableLLSCT;
+}
 
-  namespace X86 {
-#if 1
-    struct AccessInfo {
-      enum AccessMode {
-	Load = 1 << 0,
-	Store = 1 << 1,
-      };
-      enum AccessKind: int {
-	Nca,
-	Stack,
-	Global,
-      };
-  
-      AccessMode Mode;
-      AccessKind Kind;
-      SmallSet<Register, 2> AddrRegs;
+namespace llvm::X86 {
 
-      AccessInfo() = default;
-      AccessInfo(AccessMode Mode, AccessKind Kind, std::initializer_list<Register> AddrRegs_): Mode(Mode), Kind(Kind) {
-	for (Register AddrReg : AddrRegs_)
-	  AddrRegs.insert(AddrReg);
-      }
-    };
-    
-    void getAccessInfo(const MachineInstr& MI, SmallVectorImpl<AccessInfo>& Info);
-#endif
+  // TOOD: Gonna have to figure out a workaround to only having 3 flags...
+  enum AccessFlags: uint16_t {
+    AcSsbd = MachineMemOperand::MOTargetFlag2,
+  };
 
-
-    /*
-     */
-    struct Access {
-      enum AccessMode {
-	Load = 1 << 0,
-	Store = 1 << 1,
-      };
-      enum AccessKind {
-	Nca,
-	Stack,
-	Global,
-      };
-      AccessMode Mode;
-      AccessKind Kind;
-      Access(AccessMode Mode, AccessKind Kind): Mode(Mode), Kind(Kind) {}
-    };
-    
-    struct MyInstrInfo {
-      struct StackSlot {
-	int FrameIdx;
-	unsigned Bytes;
-	unsigned Offset;
-      };
-      using Location = std::variant<Register, StackSlot>;
-      
-
-      SmallVector<Access> Accesses;
-      SmallVector<Location> Uses;
-      SmallVector<Location> Defs;
-      SmallVector<Location> Leaks;
-
-#if 0
-      static MyInstrInfo get(const MachineInstr& MI) {
-      }
-#endif
-    };
-    
-  }
-
-#if 0
-  namespace X86 {
-    enum AccessFlags: uint16_t {
-      AcNca = MachineMemOperand::MOTargetFlag1,
-      AcSsbd = MachineMemOperand::MOTargetFlag2,
-      AcClass = MachineMemOperand::MOTargetFlag3,
-    };
-  }
-
-  /// Access flags
-  static const MachineMemOperand::Flags MONca = AcNca;
-  static const MachineMemOperand::Flags MOSsbd = AcSsbd;
-  static const MachineMemOperand::Flags MOClass = AcClass;
-  
-  namespace X86 {
-    AccessFlags getDefaultAccessFlags(const MachineInstr& MI);
-  }
-#endif
+  int getMemRefBeginIdx(const MCInstrDesc& Desc);
+  int getMemRefBeginIdx(const MachineInstr& MI);
 
 }
 
-#endif
+
+

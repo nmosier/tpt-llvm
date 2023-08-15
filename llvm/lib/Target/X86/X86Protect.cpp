@@ -8,6 +8,7 @@
 #include "llvm/ADT/PointerUnion.h"
 #include "MCTargetDesc/X86IntelInstPrinter.h"
 #include "X86TargetMachine.h"
+#include "llvm/CodeGen/MachineJumpTableInfo.h"
 
 #include <map>
 #include <set>
@@ -92,6 +93,8 @@ namespace {
     using Index = unsigned;
     using Weight = int;
     using Graph = std::vector<std::map<Index, Weight>>;
+    // using BitVector = std::vector<uint8_t>;
+    using BitVector = std::vector<bool>;
   public:
     void add_edge(const DFGNode& src, const DFGNode& dst) {
       add_node(src);
@@ -114,12 +117,10 @@ namespace {
 		compute_node_weight(node));
     }
     void add_source(const DFGNode& source) {
-      sources.insert(source);
       add_edge2(SuperSource(), SplitNode(source, SplitNode::IN), INT_MAX);
     }
     void add_sink(const DFGNode& sink) {
-      sinks.insert(sink);
-      add_edge2(SplitNode(sink, SplitNode::OUT), SuperSink(), 1);
+      add_edge2(SplitNode(sink, SplitNode::OUT), SuperSink(), INT_MAX);
     }
   private:
     struct Valid {
@@ -130,43 +131,8 @@ namespace {
     static bool valid(const DFGNode2& node) {
       return std::visit(Valid(), node);
     }
-  public:
-#if 0
-    void prune() {
-      for (auto it = sources.begin(); it != sources.end(); ) {
-	if (it->valid()) {
-	  ++it;
-	} else {
-	  it = sources.erase(it);
-	}
-      }
-      for (auto it = sinks.begin(); it != sinks.end(); ) {
-	if (it->valid()) {
-	  ++it;
-	} else {
-	  it = sinks.erase(it);
-	}
-      }
-      for (auto src_it = graph.begin(); src_it != graph.end(); ) {
-	if (valid(src_it->first)) {
-	  for (auto dst_it = src_it->second.begin(); dst_it != src_it->second.end();) {
-	    if (valid(dst_it->first)) {
-	      ++dst_it;
-	    } else {
-	      dst_it = src_it->second.erase(dst_it);
-	    }
-	  }
-	  ++src_it;
-	} else {
-	  src_it = graph.erase(src_it);
-	}
-      }
-    }
-#endif
-  private:
+
     Graph graph;
-    std::set<DFGNode> sources;
-    std::set<DFGNode> sinks;
     std::map<DFGNode2, Index> node_to_index;
     std::vector<DFGNode2> index_to_node;
 
@@ -192,7 +158,7 @@ namespace {
     bool bfs(Graph& R, Index s, Index t, std::vector<Index>& parent) {
       parent.clear();
       parent.resize(getNumNodes(), -1);
-      std::vector<bool> visited(getNumNodes(), false);
+      BitVector visited(getNumNodes(), false);
       std::queue<Index> q;
       q.push(s);
       visited[s] = true;
@@ -212,7 +178,7 @@ namespace {
       return visited[t];
     }
 
-    void dfs(Graph& R, Index s, std::vector<bool>& visited) {
+    void dfs(Graph& R, Index s, BitVector& visited) {
       visited[s] = true;
       for (const auto& [i, w] : R[s]) {
 	if (w > 0 && !visited[i])
@@ -222,6 +188,8 @@ namespace {
     
   public:
     void min_cut(std::set<DFGNode>& cut_nodes) {
+      errs() << "nodes: " << getNumNodes() << "\n";
+      
       auto& G = graph;
       Graph R = G;
 
@@ -229,7 +197,9 @@ namespace {
       const Index t = add_node2(SuperSink());
 
       std::vector<Index> parent(getNumNodes(), -1);
+      int n = 0;
       while (bfs(R, s, t, parent)) {
+	errs() << "\riteration " << ++n;
 	int path_flow = INT_MAX;
 	for (auto v = t; v != s; v = parent.at(v)) {
 	  auto u = parent.at(v);
@@ -243,8 +213,9 @@ namespace {
 	  R[v][u] += path_flow;
 	}
       }
+      errs() << "\n";
 
-      std::vector<bool> visited(getNumNodes(), false);
+      BitVector visited(getNumNodes(), false);
       dfs(R, s, visited);
 
       std::set<std::pair<DFGNode2, DFGNode2>> cut_edges;
@@ -281,8 +252,10 @@ namespace {
     }
 
     static inline const std::set<Register> regs = {
-      X86::RAX, X86::RBX, X86::RCX, X86::RDX, X86::RDI, X86::RSI, X86::RSP, X86::RBP,
-      X86::R8,  X86::R9,  X86::R10, X86::R11, X86::R12, X86::R13, X86::R14, X86::R15,
+      X86::RAX, X86::RBX, X86::RCX, X86::RDX,
+      X86::RDI, X86::RSI, X86::RSP, X86::RBP,
+      X86::R8,  X86::R9,  X86::R10, X86::R11,
+      X86::R12, X86::R13, X86::R14, X86::R15,
     };
     
 
@@ -366,6 +339,12 @@ namespace {
 	return false;
 
       errs() << "Running Protect on " << MF.getName() << " (" << MF.getInstructionCount() << ")\n";
+
+      if (auto *JTI = MF.getJumpTableInfo()) {
+	for (const auto& JTE : JTI->getJumpTables()) {
+	  errs() << "Jump table: "  << JTE.MBBs.size() << "\n";
+	}
+      }
 
       auto *TII = MF.getSubtarget().getInstrInfo();
       
