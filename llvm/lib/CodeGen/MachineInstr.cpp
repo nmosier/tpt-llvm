@@ -526,14 +526,14 @@ void MachineInstr::cloneInstrSymbols(MachineFunction &MF,
   setPCSections(MF, MI.getPCSections());
 }
 
-uint16_t MachineInstr::mergeFlagsWith(const MachineInstr &Other) const {
+MachineInstr::Flags_t MachineInstr::mergeFlagsWith(const MachineInstr &Other) const {
   // For now, the just return the union of the flags. If the flags get more
   // complicated over time, we might need more logic here.
   return getFlags() | Other.getFlags();
 }
 
-uint16_t MachineInstr::copyFlagsFromInstruction(const Instruction &I) {
-  uint16_t MIFlags = 0;
+MachineInstr::Flags_t MachineInstr::copyFlagsFromInstruction(const Instruction &I) {
+  Flags_t MIFlags = 0;
   // Copy the wrapping flags.
   if (const OverflowingBinaryOperator *OB =
           dyn_cast<OverflowingBinaryOperator>(&I)) {

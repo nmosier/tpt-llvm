@@ -12,7 +12,9 @@
 
 using namespace llvm;
 
-namespace llsct {  
+namespace llsct {
+
+  static int verbose = false; // TODO: 
 
   static cl::opt<bool> EnableLLSCTIndAddr {
     "llsct-indaddr",
@@ -42,11 +44,13 @@ namespace llsct {
       switch (MI->getNumMemOperands()) {
       case 0: {
 	if (X86::getMemRefBeginIdx(*MI) >= 0) {
-	  WithColor::warning() << __FILE__ << ":" << __LINE__ << ": instruction missing memory operand: " << *MI;
+	  if (verbose) 
+	    WithColor::warning() << __FILE__ << ":" << __LINE__ << ": instruction missing memory operand: " << *MI;
 	  break;
 	}
 	if (!MI->hasRegisterImplicitUseOperand(X86::RSP)) {
-	  WithColor::warning() << __FILE__ << ":" << __LINE__ << ": skipping instruction: " << *MI;
+	  if (verbose)
+	    WithColor::warning() << __FILE__ << ":" << __LINE__ << ": skipping instruction: " << *MI;
 	  break;
 	}
 	break;
@@ -68,9 +72,15 @@ namespace llsct {
       }
       
       default:
-	WithColor::warning() << __FILE__ << ":" << __LINE__ << ": not handling instruction with >1 memory operand: " << *MI;
+	if (verbose)
+	  WithColor::warning() << __FILE__ << ":" << __LINE__ << ": not handling instruction with >1 memory operand: " << *MI;
 	break;
       }
+    }
+
+    // Declassify flag
+    if (MI->getFlag(MachineInstr::LLSCTDeclassify)) {
+      addFlag(X86::IP_LLSCT_DECLASSIFY);
     }
   }
   

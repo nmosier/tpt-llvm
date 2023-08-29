@@ -68,6 +68,7 @@ class MachineInstr
                                     ilist_sentinel_tracking<true>> {
 public:
   using mmo_iterator = ArrayRef<MachineMemOperand *>::iterator;
+  using Flags_t = uint32_t;
 
   /// Flags to specify different kinds of comments to output in
   /// assembly code.  These flags carry semantic information not
@@ -112,6 +113,7 @@ public:
     NoMerge      = 1 << 15,             // Passes that drop source location info
                                         // (e.g. branch folding) should skip
                                         // this instruction.
+    LLSCTDeclassify = 1 << 16,          // LLSCT's Declassify prefix.
   };
 
 private:
@@ -122,7 +124,7 @@ private:
   MachineOperand *Operands = nullptr;   // Pointer to the first operand.
   unsigned NumOperands = 0;             // Number of operands on instruction.
 
-  uint16_t Flags = 0;                   // Various bits of additional
+  Flags_t Flags = 0;                   // Various bits of additional
                                         // information about machine
                                         // instruction.
 
@@ -349,7 +351,7 @@ public:
   }
 
   /// Return the MI flags bitvector.
-  uint16_t getFlags() const {
+  Flags_t getFlags() const {
     return Flags;
   }
 
@@ -360,7 +362,7 @@ public:
 
   /// Set a MI flag.
   void setFlag(MIFlag Flag) {
-    Flags |= (uint16_t)Flag;
+    Flags |= (Flags_t)Flag;
   }
 
   void setFlags(unsigned flags) {
@@ -371,7 +373,7 @@ public:
 
   /// clearFlag - Clear a MI flag.
   void clearFlag(MIFlag Flag) {
-    Flags &= ~((uint16_t)Flag);
+    Flags &= ~((Flags_t)Flag);
   }
 
   /// Return true if MI is in a bundle (but not the first MI in a bundle).
@@ -1851,9 +1853,9 @@ public:
   /// Return the MIFlags which represent both MachineInstrs. This
   /// should be used when merging two MachineInstrs into one. This routine does
   /// not modify the MIFlags of this MachineInstr.
-  uint16_t mergeFlagsWith(const MachineInstr& Other) const;
+  Flags_t mergeFlagsWith(const MachineInstr& Other) const;
 
-  static uint16_t copyFlagsFromInstruction(const Instruction &I);
+  static Flags_t copyFlagsFromInstruction(const Instruction &I);
 
   /// Copy all flags to MachineInst MIFlags
   void copyIRFlags(const Instruction &I);

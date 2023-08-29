@@ -1293,7 +1293,12 @@ bool X86MCCodeEmitter::emitOpcodePrefix(int MemOperand, const MCInst &MI,
 #endif
 
   // Emit the INDADDR opcode prefix.
+#if 0
   if (MI.getFlags() & X86::IP_HAS_INDADDR) {
+    emitByte(0x36, OS);
+  }
+#endif
+  if (MI.getFlags() & X86::IP_LLSCT_DECLASSIFY) {
     emitByte(0x36, OS);
   }
 

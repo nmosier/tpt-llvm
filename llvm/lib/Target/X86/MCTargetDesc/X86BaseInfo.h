@@ -70,6 +70,7 @@ namespace X86 {
     IP_HAS_NOSPEC =    1U << 12,
     IP_HAS_SSBD =      1U << 13,
     IP_HAS_INDADDR =   1U << 14,
+    IP_LLSCT_DECLASSIFY = 1U << 15,
   };
 
   enum OperandType : unsigned {

@@ -15,6 +15,8 @@
 #include "llvm/Support/WithColor.h"
 #include "llvm/IR/Value.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/Analysis/AliasAnalysis.h"
+#include "X86Declassify.h"
 
 using namespace llvm;
 using namespace llsct;
@@ -42,7 +44,19 @@ static cl::opt<bool> EnableLLSCTRet {
 static cl::opt<bool> EnableLLSCTStackInit {
   PASS_KEY "-stackinit",
   cl::desc("Enable LLSCT Stack Initialization"),
-  cl::init(true),
+  cl::init(false),
+};
+
+static cl::opt<bool> EnableDeclassify {
+  PASS_KEY "-declassify",
+  cl::desc("Enable LLSCT's Declassification Hint Pass"),
+  cl::init(false),
+};
+
+static cl::opt<bool> DumpMIR {
+  PASS_KEY "-dump-mir",
+  cl::desc("Dump Machine IR coming into LLSCT Pass"),
+  cl::init(false)
 };
 
 namespace llvm::X86 {
@@ -69,6 +83,7 @@ namespace {
   private:
     void getAnalysisUsage(AnalysisUsage& AU) const override {
       AU.setPreservesCFG();
+      AU.addRequired<AAResultsWrapperPass>();
       MachineFunctionPass::getAnalysisUsage(AU);
     }
 
@@ -377,8 +392,14 @@ namespace {
   
 
   bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
+    if (DumpMIR)
+      MF.dump();
+    
     if (!EnableLLSCT)
       return false;
+
+    if (EnableDeclassify)
+      X86::runDeclassificationPass(MF);
 
 #if 0
     for (BasicBlock& B : MF.getFunction()) {
