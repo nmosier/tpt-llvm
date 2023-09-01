@@ -7,6 +7,7 @@
 #include "../lib/IR/ConstantsContext.h"
 #include <set>
 #include <queue>
+#include <bitset>
 
 namespace llvm::X86 {
 
@@ -19,11 +20,11 @@ namespace llvm::X86 {
       auto tuple() const { return std::make_tuple(Index, Offset); }
       bool operator<(const FrameLocation& o) const { return tuple() < o.tuple(); }
       bool operator==(const FrameLocation& o) const { return tuple() == o.tuple(); }
-    };    
+    };
 
     class Value {
     private:
-      std::set<Register> PubRegs;
+      std::bitset<NUM_TARGET_REGS> PubRegs;
 
       static Register canonicalizeRegister(Register Reg) {
 	if (Reg == X86::EFLAGS)
@@ -37,7 +38,7 @@ namespace llvm::X86 {
 
       void delPubReg(Register Reg) {
 	Reg = canonicalizeRegister(Reg);
-	PubRegs.erase(Reg);
+	PubRegs.reset(Reg);
       }
 
       void removeClobberedRegisters(const MachineInstr& MI);
@@ -46,31 +47,32 @@ namespace llvm::X86 {
       bool allInputsPublic(const MachineInstr& MI) const;
       bool anyOutputPublic(const MachineInstr& MI) const;
 
-      bool operator<(const Value& o) const { return PubRegs < o.PubRegs; }
+      // bool operator<(const Value& o) const { return PubRegs < o.PubRegs; }
       bool operator==(const Value& o) const { return PubRegs == o.PubRegs; }
       bool operator!=(const Value& o) const { return !(*this == o); }
       
       void addPubReg(Register Reg) {
 	Reg = canonicalizeRegister(Reg);
 	if (!registerIsAlwaysPublic(Reg))
-	  PubRegs.insert(Reg);
+	  PubRegs.set(Reg);
       }
 
       bool hasPubReg(Register Reg) const {
 	Reg = canonicalizeRegister(Reg);
 	if (registerIsAlwaysPublic(Reg))
 	  return true;
-	return PubRegs.find(Reg) != PubRegs.end();
+	return PubRegs.test(Reg);
       }
 
-      void setAllInstrInputsPublic(const MachineInstr& MI);
+      [[nodiscard]] bool setAllInstrInputsPublic(const MachineInstr& MI);
 
       void transferForward(const MachineInstr& MI);
       void transferBackward(const MachineInstr& MI);
 
+      // LLSCT-FIXME: meetForward and meetBackward should return new copies, to avoid mistakenly not setting changed correctly.
       void meetForward(const Value& o);
       void meetBackward(const Value& o);
-      void set_union(const Value& o);
+      [[nodiscard]] bool set_union(const Value& o);
     };
 
     struct Node {
@@ -78,7 +80,7 @@ namespace llvm::X86 {
       Value post;
 
       auto tuple() const { return std::make_tuple(pre, post); }
-      bool operator<(const Node& o) const { return tuple() < o.tuple(); }
+      // bool operator<(const Node& o) const { return tuple() < o.tuple(); }
       bool operator==(const Node& o) const { return tuple() == o.tuple(); }
       bool operator!=(const Node& o) const { return tuple() != o.tuple(); }
     };
@@ -126,7 +128,7 @@ namespace llvm::X86 {
     void Value::removeClobberedRegisters(const MachineInstr& MI) {
       for (const MachineOperand& MO : MI.operands()) {
 	if (MO.isReg() && ((MO.isUse() && MO.isKill()) || MO.isDef())) {
-	  PubRegs.erase(canonicalizeRegister(MO.getReg()));
+	  PubRegs.reset(canonicalizeRegister(MO.getReg()));
 	}
       }
     }
@@ -165,29 +167,27 @@ namespace llvm::X86 {
 	    addPubReg(MO.getReg());
     }
 
-    void Value::setAllInstrInputsPublic(const MachineInstr& MI) {
+    bool Value::setAllInstrInputsPublic(const MachineInstr& MI) {
+      const auto orig_size = PubRegs.count();
       for (const MachineOperand& MO : MI.operands())
 	if (MO.isReg() && MO.isUse())
 	  addPubReg(MO.getReg());
+      return orig_size != PubRegs.count();
     }
 
     void Value::meetForward(const Value& o) {
       // set intersection
-      for (auto it = PubRegs.begin(); it != PubRegs.end(); ) {
-	if (o.PubRegs.find(*it) != o.PubRegs.end()) {
-	  ++it;
-	} else {
-	  it = PubRegs.erase(it);
-	}
-      }
+      PubRegs &= o.PubRegs;
     }
 
     void Value::meetBackward(const Value& o) {
       set_union(o);
     }
 
-    void Value::set_union(const Value& o) {
-      llvm::copy(o.PubRegs, std::inserter(PubRegs, PubRegs.end()));
+    bool Value::set_union(const Value& o) {
+      const auto orig_size = PubRegs.count();
+      PubRegs |= o.PubRegs;
+      return PubRegs.count() != orig_size;
     }
 
     bool getFrameAccess(const MachineInstr& MI, FrameLocation& FL) {
@@ -354,8 +354,9 @@ namespace llvm::X86 {
       }
     }
 
+    bool changed;
     do {
-      Bak = Map;
+      changed = false;
 
       // Transfer function for each machine instruction
       for (MachineBasicBlock& MBB : MF) {
@@ -364,12 +365,12 @@ namespace llvm::X86 {
 	  {
 	    Value Fwd = Node.pre;
 	    Fwd.transferForward(MI);
-	    Node.post.set_union(Fwd);
+	    changed |= Node.post.set_union(Fwd);
 	  }
 	  {
 	    Value Bwd = Node.post;
 	    Bwd.transferBackward(MI);
-	    Node.pre.set_union(Bwd);
+	    changed |= Node.pre.set_union(Bwd);
 	  }
 	}
       }
@@ -387,7 +388,7 @@ namespace llvm::X86 {
 	for (MachineInstr& MI : MBB) {
 	  FrameLocation FL;
 	  if (MI.mayStore() && getFrameAccess(MI, FL) && PubFrameLocs.find(FL) != PubFrameLocs.end())
-	    Map[&MI].pre.setAllInstrInputsPublic(MI);
+	    changed |= Map[&MI].pre.setAllInstrInputsPublic(MI);
 	}
       }
 
@@ -407,7 +408,7 @@ namespace llvm::X86 {
 	  }
 	}
 	if (Fwd) {
-	  Map[&MBB.front()].pre.set_union(*Fwd);
+	  changed |= Map[&MBB.front()].pre.set_union(*Fwd);
 	}
 
 	// Meet backward
@@ -421,19 +422,20 @@ namespace llvm::X86 {
 	  }
 	}
 	if (Bwd) {
-	  Map[&MBB.back()].post.set_union(*Bwd);
+	  changed |= Map[&MBB.back()].post.set_union(*Bwd);
 	}
 
 	// Within same block
 	for (auto it1 = MBB.begin(), it2 = std::next(it1); it2 != MBB.end(); ++it1, ++it2) {
 	  auto& Val1 = Map[&*it1].post;
 	  auto& Val2 = Map[&*it2].pre;
-	  Val1.set_union(Val2);
+	  changed |= (Val1 != Val2);
+	  changed |= Val1.set_union(Val2);
 	  Val2 = Val1;
 	}
       }
 
-    } while (Map != Bak);
+    } while (changed);
 
     // Mark loads/stores as declassified iff their value operand is public.
     for (MachineBasicBlock& MBB : MF) {
