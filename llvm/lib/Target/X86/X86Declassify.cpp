@@ -5,6 +5,9 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Constants.h"
 #include "../lib/IR/ConstantsContext.h"
+#include "llvm/IR/IntrinsicInst.h"
+#include "llvm/CodeGen/MachineJumpTableInfo.h"
+#include "X86Subtarget.h"
 #include <set>
 #include <queue>
 #include <bitset>
@@ -13,6 +16,43 @@ namespace llvm::X86 {
 
   namespace {
 
+    bool IsIndirectControlFlow(const MachineInstr& MI) {
+      if (MI.isIndirectBranch() || MI.isReturn()) {
+	return true;
+      } else if (MI.isCall()) {
+	switch (MI.getOpcode()) {
+	case X86::CALL64pcrel32:
+	  return false;
+	case X86::CALL64r:
+	case X86::CALL64m:
+	  return true;
+	default:
+	  errs() << __FILE__ << ":" << __LINE__ << ": unhandled opcode: " << MI << "\n";
+	  report_fatal_error("exiting");
+	}
+      } else {
+	return false;
+      }
+    }
+
+    template <class Range>
+    auto FilterRegMask(const MachineInstr *MI, Range&& range) {
+      const uint32_t *RegMask = nullptr;
+      if (MI) {
+	for (const MachineOperand& MO : MI->operands()) {
+	  if (MO.isRegMask()) {
+	    assert(!RegMask);
+	    RegMask = MO.getRegMask();
+	  }
+	}
+      }
+      return llvm::make_filter_range(range, [RegMask] (MCRegister Reg) {
+	return !(RegMask && (RegMask[Reg / 32] & (1u << (Reg % 32))) != 0);
+      });
+    }
+
+    static const std::set<MCRegister> csrs = {X86::RBP, X86::RBX, X86::R12, X86::R13, X86::R14, X86::R15};
+    
     struct FrameLocation {
       int Index;
       uint64_t Offset;
@@ -181,7 +221,7 @@ namespace llvm::X86 {
     }
 
     void Value::meetBackward(const Value& o) {
-      set_union(o);
+      (void) set_union(o);
     }
 
     bool Value::set_union(const Value& o) {
@@ -264,6 +304,25 @@ namespace llvm::X86 {
     getNonemptySuccessors(MF.front(), entrypoints, [] (MachineBasicBlock *MBB) { return MBB->successors(); }, true);
     return entrypoints;
   }
+
+  void BuildCFILabel(MachineBasicBlock& MBB, MachineBasicBlock::iterator MBBI,
+		     uint32_t CFILabel, MCRegister BaseReg) {
+    const auto *TII = MBB.getParent()->getSubtarget<X86Subtarget>().getInstrInfo();
+    BuildMI(MBB, MBBI, DebugLoc(), TII->get(X86::CFILBL))
+      .addReg(BaseReg)
+      .addImm(1)
+      .addReg(X86::NoRegister)
+      .addImm(CFILabel)
+      .addReg(X86::NoRegister);
+  }
+
+  void BuildCFILabel_Dst(MachineBasicBlock& MBB, MachineBasicBlock::iterator MBBI, uint32_t CFILabel) {
+    BuildCFILabel(MBB, MBBI, CFILabel, X86::RDI);
+  }
+
+  void BuildCFILabel_Src(MachineBasicBlock& MBB, MachineBasicBlock::iterator MBBI, uint32_t CFILabel) {
+    BuildCFILabel(MBB, MBBI, CFILabel, X86::RSI);
+  }
   
   void runDeclassificationPass(MachineFunction& MF) {
     std::set<MachineMemOperand *> Declassified;
@@ -271,6 +330,7 @@ namespace llvm::X86 {
     std::map<MachineInstr *, Node> Map, Bak;
 
     // All input registers are assumed to be public.
+    // FIXME: No longer make this assumption.
     {
       for (MachineBasicBlock *EntryMBB : getNonemptyEntrypoints(MF)) {
 	auto& Entry = Map[&EntryMBB->front()].pre;
@@ -280,6 +340,53 @@ namespace llvm::X86 {
       }
     }
 
+    // Declassify the value operands / results of all memory accesses that were
+    // flagged as declassified in our IR pass.
+    for (MachineBasicBlock& MBB : MF) {
+      for (MachineInstr& MI : MBB) {
+	const bool should_declassify =
+	  any_of(MI.memoperands(), [] (const MachineMemOperand *MemOp) -> bool {
+	    auto *II = dyn_cast_or_null<IntrinsicInst>(MemOp->getValue());
+	    if (!II)
+	      return false;
+	    if (II->getIntrinsicID() != Intrinsic::ptr_annotation)
+	      return false;
+	    GlobalVariable *Global = dyn_cast<GlobalVariable>(II->getOperand(1));
+	    if (!Global)
+	      return false;
+	    if (!Global->hasInitializer())
+	      return false;
+	    auto *ConstArr = dyn_cast<ConstantDataArray>(Global->getInitializer());
+	    if (!ConstArr->isCString())
+	      return false;
+	    if (ConstArr->getAsCString() != "llsct.declassify")
+	      return false;
+	    return true;
+	  });
+	
+	if (!should_declassify)
+	  continue;
+
+	// FIXME: Just do it for the ones that are really declassified?
+	for (MachineMemOperand *MemOp : MI.memoperands())
+	  Declassified.insert(MemOp);
+
+	auto& Val = Map[&MI];
+	
+	if (MI.mayLoad()) {
+	  // All outputs are declassified.
+	  for (MachineOperand& MO : MI.operands())
+	    if (MO.isReg() && MO.isDef())
+	      Val.post.addPubReg(MO.getReg());
+	} else if (MI.mayStore()) {
+	  // All inputs are declassified.
+	  for (MachineOperand& MO : MI.operands())
+	    if (MO.isReg() && MO.isUse())
+	      Val.pre.addPubReg(MO.getReg());
+	}
+      }
+    }
+      
     // All sensitive operands of transmitters are assumed to be public.
     // For now, we will just consider (a) the address operands of memory accesses,
     // (b) the operands of control-flow instructions, and (c) the operands of
@@ -468,6 +575,75 @@ namespace llvm::X86 {
 	}
       }
     }
+    
+
+    std::set<const MachineBasicBlock *> indirect_entrypoints = {&MF.front()};
+    if (const MachineJumpTableInfo *JTI = MF.getJumpTableInfo ())
+      for (const auto& JTE : JTI->getJumpTables())
+	llvm::copy(JTE.MBBs, std::inserter(indirect_entrypoints, indirect_entrypoints.end()));
+
+    
+
+    for (MachineBasicBlock& MBB : MF) {
+      for (MachineInstr& MI : MBB) {
+	const Value& value = Map[&MI].pre;
+
+	// Source CFI labels.
+	if (IsIndirectControlFlow(MI)) {
+	  llvm::errs() << "src: " << MI << "\n";
+	  
+	  GPRBitMask label;
+
+	  // Add to the mask any remaining GPRs that are public.
+	  for (MCRegister gpr : FilterRegMask(&MI, label.gprs()))
+	    if (value.hasPubReg(gpr))
+	      label.add(gpr);
+	  
+	  BuildCFILabel_Src(MBB, MI.getIterator(), label.getValue());
+	}
+
+
+	// Destination CFI labels.
+	if ((!MI.getPrevNode() && indirect_entrypoints.find(&MBB) != indirect_entrypoints.end()) ||
+	    (MI.getPrevNode() && MI.getPrevNode()->isCall() && !MI.getPrevNode()->isReturn())) {
+	  llvm::errs() << "dst: " << MI << "\n";
+
+	  GPRBitMask label;
+
+	  const MachineInstr *Prev = MI.getPrevNode();
+
+	  for (MCRegister gpr : FilterRegMask(Prev, label.gprs()))
+	    if (value.hasPubReg(gpr))
+	      label.add(gpr);
+	  
+	  BuildCFILabel_Dst(MBB, MI.getIterator(), label.getValue());
+	}
+	
+      }
+    }
+
+    // Destination CFI Labels.
+    
+	
+
+# if 0
+    // Collect stats on what fraction of callee-saved registers are public.
+    {
+      const auto *TII = MF.getSubtarget<X86Subtarget>().getInstrInfo();
+      for (MachineBasicBlock& MBB : MF) {
+	for (MachineInstr& MI : MBB) {
+	  if (MI.isCall() || MI.isReturn()) {
+	    for (MCRegister csr : csrs) {
+	      const Value& value = Map[&MI].pre;
+	      if (value.hasPubReg(csr)) {
+		BuildMI(MBB, MI.getIterator(), DebugLoc(), TII->get(X86::INT3));
+	      }
+	    }
+	  }
+	}
+      }
+    }
+#endif
     
   }
   
