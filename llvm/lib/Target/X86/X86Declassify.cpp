@@ -11,6 +11,7 @@
 #include <set>
 #include <queue>
 #include <bitset>
+#include "X86LLSCTUtil.h"
 
 namespace llvm::X86 {
 
@@ -113,6 +114,17 @@ namespace llvm::X86 {
       void meetForward(const Value& o);
       void meetBackward(const Value& o);
       [[nodiscard]] bool set_union(const Value& o);
+
+      void print(llvm::raw_ostream& os, const llvm::TargetRegisterInfo *TRI) const {
+	os << "{";
+	for (unsigned Reg = 0; Reg < NUM_TARGET_REGS; ++Reg) {
+	  if (PubRegs[Reg]) {
+	    os << TRI->getRegAsmName(Reg) << " ";
+	  }
+	}
+	os << "}";
+      }
+	
     };
 
     struct Node {
@@ -169,6 +181,8 @@ namespace llvm::X86 {
       for (const MachineOperand& MO : MI.operands()) {
 	if (MO.isReg() && ((MO.isUse() && MO.isKill()) || MO.isDef())) {
 	  PubRegs.reset(canonicalizeRegister(MO.getReg()));
+	} else if (MO.isRegMask()) {
+	  PubRegs &= util::regmask_to_bitset(MO.getRegMask());
 	}
       }
     }
@@ -188,20 +202,18 @@ namespace llvm::X86 {
     }
     
     void Value::transferForward(const MachineInstr& MI) {
+      const bool any_input_public = !MI.mayLoad() && !MI.isCall() && allInputsPublic(MI);
       removeClobberedRegisters(MI);
-
-      // If all inputs are public, then mark all outputs as public.
-      if (!MI.mayLoad() && allInputsPublic(MI))
+      if (any_input_public)
 	for (const MachineOperand& MO : MI.operands())
 	  if (MO.isReg() && MO.isDef())
 	    addPubReg(MO.getReg());
     }
 
     void Value::transferBackward(const MachineInstr& MI) {
+      const bool any_output_public = !MI.isCall() && anyOutputPublic(MI);
       removeClobberedRegisters(MI);
-
-      // If all outputs are public, then mark all inputs as public.
-      if (!MI.mayLoad() && anyOutputPublic(MI))
+      if (any_output_public)
 	for (const MachineOperand& MO : MI.operands())
 	  if (MO.isReg() && MO.isUse())
 	    addPubReg(MO.getReg());
@@ -331,6 +343,7 @@ namespace llvm::X86 {
 
     // All input registers are assumed to be public.
     // FIXME: No longer make this assumption.
+#if 0
     {
       for (MachineBasicBlock *EntryMBB : getNonemptyEntrypoints(MF)) {
 	auto& Entry = Map[&EntryMBB->front()].pre;
@@ -339,6 +352,7 @@ namespace llvm::X86 {
 	}
       }
     }
+#endif
 
     // Declassify the value operands / results of all memory accesses that were
     // flagged as declassified in our IR pass.
@@ -372,8 +386,10 @@ namespace llvm::X86 {
 	  Declassified.insert(MemOp);
 
 	auto& Val = Map[&MI];
-	
-	if (MI.mayLoad()) {
+
+	if (MI.isCall()) {
+	  // FIXME: These should always be declassified anyway, so we should ignore it.
+	} else if (MI.mayLoad()) {
 	  // All outputs are declassified.
 	  for (MachineOperand& MO : MI.operands())
 	    if (MO.isReg() && MO.isDef())
@@ -400,22 +416,6 @@ namespace llvm::X86 {
 	  for (MachineOperand& MO : MI.operands())
 	    if (MO.isReg() && MO.isUse())
 	      Val.pre.addPubReg(MO.getReg());
-	}
-
-	// Declassify call arguments.
-	if (MI.isCall() || MI.isReturn()) {
-	  // Look for implicit kills and implicit defs.
-	  for (const MachineOperand& MO : MI.operands()) {
-	    if (MO.isReg() && MO.isImplicit()) {
-	      const Register Reg = MO.getReg();
-	      if (MO.isUse() && MO.isKill()) {
-		Val.pre.addPubReg(Reg);
-	      } else if (MO.isDef()) {
-		Val.post.addPubReg(Reg);
-	      }
-	      // llvm_unreachable("implicit machine register operand must be kill or def");
-	    }
-	  }
 	}
 
 	// Declassify operands of division instructions
@@ -452,7 +452,8 @@ namespace llvm::X86 {
 	      for (const MachineOperand& MO : MI.operands()) {
 		if (MO.isReg()) {
 		  Val.pre.addPubReg(MO.getReg());
-		  Val.post.addPubReg(MO.getReg());
+		  if (!MI.isCall())
+		    Val.post.addPubReg(MO.getReg());
 		}
 	      }
 	    }
@@ -460,6 +461,25 @@ namespace llvm::X86 {
 	}
       }
     }
+
+
+    // DEBUG ONLY
+    const auto dump_taint = [&] () {
+      for (auto& MBB : MF) {
+	for (auto& MI : MBB) {
+	  const auto *TRI = MF.getSubtarget().getRegisterInfo();
+	  const auto& node = Map[&MI];
+	  auto& os = errs();
+	  os << "\t";
+	  node.pre.print(os, TRI);
+	  os << "\n";
+	  os << MI;
+	  os << "\t";
+	  node.post.print(os, TRI);
+	  os << "\n";
+	}
+      }
+    };
 
     bool changed;
     do {
@@ -575,7 +595,10 @@ namespace llvm::X86 {
 	}
       }
     }
-    
+
+#if 0
+    dump_taint();
+#endif
 
     std::set<const MachineBasicBlock *> indirect_entrypoints = {&MF.front()};
     if (const MachineJumpTableInfo *JTI = MF.getJumpTableInfo ())
@@ -590,7 +613,7 @@ namespace llvm::X86 {
 
 	// Source CFI labels.
 	if (IsIndirectControlFlow(MI)) {
-	  llvm::errs() << "src: " << MI << "\n";
+	  //	  llvm::errs() << "src: " << MI << "\n";
 	  
 	  GPRBitMask label;
 
@@ -606,7 +629,7 @@ namespace llvm::X86 {
 	// Destination CFI labels.
 	if ((!MI.getPrevNode() && indirect_entrypoints.find(&MBB) != indirect_entrypoints.end()) ||
 	    (MI.getPrevNode() && MI.getPrevNode()->isCall() && !MI.getPrevNode()->isReturn())) {
-	  llvm::errs() << "dst: " << MI << "\n";
+	  // llvm::errs() << "dst: " << MI << "\n";
 
 	  GPRBitMask label;
 
