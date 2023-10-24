@@ -93,7 +93,9 @@ set(sources
   X86WinEHState.cpp
   X86InsertWait.cpp
   X86LLSCT.cpp
+  X86LLSCTUtil.cpp
   X86Declassify.cpp
+  X86TaintCFI.cpp
   X86Protect.cpp
   X86ReturnHardening.cpp
   )

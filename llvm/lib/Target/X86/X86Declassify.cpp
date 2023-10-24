@@ -7,6 +7,7 @@
 #include "../lib/IR/ConstantsContext.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/CodeGen/MachineJumpTableInfo.h"
+#include "llvm/Support/WithColor.h"
 #include "X86Subtarget.h"
 #include <set>
 #include <queue>
@@ -188,6 +189,7 @@ namespace llvm::X86 {
     }
 
     bool Value::allInputsPublic(const MachineInstr& MI) const {
+      // TODO: IS it okay that memory accesses may come here?
       for (const MachineOperand& MO : MI.operands())
 	if (MO.isReg() && MO.isUse() && !hasPubReg(MO.getReg()))
 	  return false;
@@ -202,6 +204,7 @@ namespace llvm::X86 {
     }
     
     void Value::transferForward(const MachineInstr& MI) {
+      // FIXME: Should handle memory accesses specially, rather than just saying !MI.mayLoad().
       const bool any_input_public = !MI.mayLoad() && !MI.isCall() && allInputsPublic(MI);
       removeClobberedRegisters(MI);
       if (any_input_public)
@@ -210,8 +213,41 @@ namespace llvm::X86 {
 	    addPubReg(MO.getReg());
     }
 
+    static bool isPush(const MachineInstr& MI) {
+      switch (MI.getOpcode()) {
+      case X86::PUSH64r:
+      case X86::PUSH64i32:
+      case X86::PUSH64i8:
+      case X86::PUSH64rmm:
+	return true;
+      case X86::ADJCALLSTACKDOWN64:
+      case X86::ADJCALLSTACKUP64:
+	return false;
+      default: break;
+      }
+
+      if (MI.isCall() || MI.isReturn())
+	return false;
+
+      if (!MI.mayStore())
+	return false;
+
+      if (llvm::none_of(MI.operands(), [] (const MachineOperand& MO) {
+	return MO.isReg() && MO.isUse() && MO.isImplicit() && MO.getReg() == X86::RSP;
+      }))
+	return false;
+
+      if (llvm::none_of(MI.operands(), [] (const MachineOperand& MO) {
+	return MO.isReg() && MO.isDef() && MO.isImplicit() && MO.getReg() == X86::RSP;
+      }))
+	return false;
+
+      errs() << "isPush: unhandled instruction: " << MI;
+      abort();
+    }
+
     void Value::transferBackward(const MachineInstr& MI) {
-      const bool any_output_public = !MI.isCall() && anyOutputPublic(MI);
+      const bool any_output_public = !MI.isCall() && !isPush(MI) && anyOutputPublic(MI);
       removeClobberedRegisters(MI);
       if (any_output_public)
 	for (const MachineOperand& MO : MI.operands())
@@ -336,7 +372,7 @@ namespace llvm::X86 {
     BuildCFILabel(MBB, MBBI, CFILabel, X86::RSI);
   }
   
-  void runDeclassificationPass(MachineFunction& MF) {
+  std::map<MachineInstr *, Node> runTaintAnalysis(MachineFunction& MF) {
     std::set<MachineMemOperand *> Declassified;
 
     std::map<MachineInstr *, Node> Map, Bak;
@@ -353,6 +389,39 @@ namespace llvm::X86 {
       }
     }
 #endif
+
+    // Add the inputs/outputs of explicitly declassified load/stores via the MIFlag LLSCTDeclassify.
+    for (MachineBasicBlock& MBB : MF) {
+      for (MachineInstr& MI : MBB) {
+	if (MI.getFlag(MI.LLSCTDeclassify)) {
+	  if (MI.mayStore())
+	    for (const MachineOperand& MO : MI.operands())
+	      if (MO.isReg() && MO.isUse())
+		Map[&MI].pre.addPubReg(MO.getReg());
+	  if (MI.mayLoad())
+	    for (const MachineOperand& MO : MI.operands())
+	      if (MO.isReg() && MO.isDef())
+		Map[&MI].post.addPubReg(MO.getReg());
+	}
+      }
+    }
+
+    // Add explicitly declassified arguments.
+    if (const MDNode *node = MF.getFunction().getMetadata("llsct.declassify.arg")) {
+      const auto argmap = util::irargs_to_mcargs(MF);
+      for (const Metadata *arg_idx_op : node->operands()) {
+	const uint64_t arg_idx = llvm::cast<ConstantInt>(llvm::cast<ConstantAsMetadata>(arg_idx_op)->getValue())->getLimitedValue();
+	const Argument *irarg = MF.getFunction().getArg(arg_idx);
+	const auto argit = argmap.find(irarg);
+	if (argit != argmap.end()) {
+	  const auto phys_reg = argit->second;
+	  for (MachineBasicBlock *entrypoint : getNonemptyEntrypoints(MF))
+	    Map[&entrypoint->front()].pre.addPubReg(phys_reg);
+	} else {
+	  WithColor::warning() << "argument missing from mapping: " << *irarg << "\n";
+	}
+      }
+    }
 
     // Declassify the value operands / results of all memory accesses that were
     // flagged as declassified in our IR pass.
@@ -412,7 +481,13 @@ namespace llvm::X86 {
 	auto& Val = Map[&MI];
 
 	// Declassify operands of control-flow instructions
-	if (MI.isCall() || MI.isBranch() || MI.isReturn()) {
+	if (MI.isCall()) {
+	  const MachineOperand& MO = MI.getOperand(0);
+	  if (MO.isReg()) {
+	    assert(MO.isUse());
+	    Val.pre.addPubReg(MO.getReg());
+	  }
+	} else if (MI.isBranch()) {
 	  for (MachineOperand& MO : MI.operands())
 	    if (MO.isReg() && MO.isUse())
 	      Val.pre.addPubReg(MO.getReg());
@@ -437,6 +512,7 @@ namespace llvm::X86 {
 	// Declassify address operands
 	int MemIdx = getMemRefBeginIdx(MI);
 	if (MI.mayLoadOrStore() && MemIdx >= 0) {
+	  assert(MI.getOpcode() != X86::LEA64r);
 	  const MachineOperand& BaseOp = MI.getOperand(MemIdx + X86::AddrBaseReg);
 	  const MachineOperand& IndexOp = MI.getOperand(MemIdx + X86::AddrIndexReg);
 	  if (BaseOp.isReg())
@@ -464,12 +540,12 @@ namespace llvm::X86 {
 
 
     // DEBUG ONLY
-    const auto dump_taint = [&] () {
+    const auto dump_taint = [&] (llvm::raw_ostream& os) {
+      os << "TAINT FOR FUNCTION " << MF.getFunction().getName() << "\n";
       for (auto& MBB : MF) {
 	for (auto& MI : MBB) {
 	  const auto *TRI = MF.getSubtarget().getRegisterInfo();
 	  const auto& node = Map[&MI];
-	  auto& os = errs();
 	  os << "\t";
 	  node.pre.print(os, TRI);
 	  os << "\n";
@@ -564,6 +640,13 @@ namespace llvm::X86 {
 
     } while (changed);
 
+    return Map;
+  }
+
+  void runDeclassifyAnnotationPass(MachineFunction& MF) {
+
+    auto Map = runTaintAnalysis(MF);
+
     // Mark loads/stores as declassified iff their value operand is public.
     for (MachineBasicBlock& MBB : MF) {
       for (MachineInstr& MI : MBB) {
@@ -600,13 +683,17 @@ namespace llvm::X86 {
     dump_taint();
 #endif
 
+  }
+
+
+  void runDeclassifyCFIPass(MachineFunction& MF) {
+    auto Map = runTaintAnalysis(MF);
+
     std::set<const MachineBasicBlock *> indirect_entrypoints = {&MF.front()};
     if (const MachineJumpTableInfo *JTI = MF.getJumpTableInfo ())
       for (const auto& JTE : JTI->getJumpTables())
 	llvm::copy(JTE.MBBs, std::inserter(indirect_entrypoints, indirect_entrypoints.end()));
-
     
-
     for (MachineBasicBlock& MBB : MF) {
       for (MachineInstr& MI : MBB) {
 	const Value& value = Map[&MI].pre;

@@ -34,6 +34,7 @@
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Recycler.h"
 #include "llvm/Target/TargetOptions.h"
+#include "llvm/CodeGen/CallingConvLower.h"
 #include <cassert>
 #include <cstdint>
 #include <memory>
@@ -369,6 +370,11 @@ class LLVM_EXTERNAL_VISIBILITY MachineFunction {
   /// CodeView label annotations.
   std::vector<std::pair<MCSymbol *, MDNode *>> CodeViewAnnotations;
 
+ public:
+  /// Calling convention argument-register assignments.
+  std::vector<CCValAssign> FormalArgLocs;
+
+ private:
   bool CallsEHReturn = false;
   bool CallsUnwindInit = false;
   bool HasEHCatchret = false;

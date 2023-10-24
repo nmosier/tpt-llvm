@@ -59,6 +59,12 @@ static cl::opt<bool> DumpMIR {
   cl::init(false)
 };
 
+static cl::opt<std::string> DumpFunction {
+  PASS_KEY "-dump-func",
+  cl::desc("Dump Machine IR for all functions containing the given substring"),
+  cl::init("")
+};
+
 namespace llvm::X86 {
   int getMemRefBeginIdx(const MCInstrDesc& Desc) {
     int MemRefBeginIdx = X86II::getMemoryOperandNo(Desc.TSFlags);
@@ -399,7 +405,13 @@ namespace {
       return false;
 
     if (EnableDeclassify)
-      X86::runDeclassificationPass(MF);
+      X86::runDeclassifyAnnotationPass(MF);
+
+    const StringRef DumpFunctionName = DumpFunction.getValue().c_str();
+    if (!DumpFunctionName.empty() && MF.getName().contains(DumpFunctionName))
+      MF.getFunction().print(errs());
+
+    return true;
 
 #if 0
     for (BasicBlock& B : MF.getFunction()) {

@@ -164,6 +164,7 @@ FunctionPass *createX86SpeculativeLoadHardeningPass();
 FunctionPass *createX86SpeculativeExecutionSideEffectSuppression();
 
 FunctionPass *createX86LLSCTPass();
+FunctionPass *createX86TaintCFIPass();
 
 FunctionPass *createX86ProtectPass();
 FunctionPass *createX86ReturnHardeningPass();
@@ -200,6 +201,7 @@ void initializeX86SpeculativeExecutionSideEffectSuppressionPass(PassRegistry &);
 void initializeX86SpeculativeLoadHardeningPassPass(PassRegistry &);
 void initializeX86TileConfigPass(PassRegistry &);
 void initializeX86LLSCTPass(PassRegistry &);
+void initializeX86TaintCFIPass(PassRegistry &);
 void initializeX86ProtectPass(PassRegistry &);
 void initializeX86ReturnHardeningPass(PassRegistry &);
 

@@ -4326,6 +4326,20 @@ SDValue X86TargetLowering::LowerFormalArguments(
       MRI.disableCalleeSavedRegister(Pair.first);
   }
 
+#if 0
+  for (const CCValAssign& VA : ArgLocs) {
+    if (VA.isRegLoc()) {
+      const Register Reg = VA.getLocReg();
+      assert(Reg.isPhysical());
+      errs() << "lowered " << MF.getSubtarget().getRegisterInfo()->getRegAsmName(Reg.asMCReg()) << "    ";
+      errs() << *MF.getFunction().getArg(VA.getValNo()) << "\n";
+    }
+  }
+#endif
+
+  assert(MF.FormalArgLocs.empty());
+  llvm::copy(ArgLocs, std::back_inserter(MF.FormalArgLocs));
+
   return Chain;
 }
 

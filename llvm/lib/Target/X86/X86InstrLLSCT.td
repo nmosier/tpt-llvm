@@ -33,3 +33,9 @@ def PROTECT64rr : RI<0x89, MRMDestReg, (outs GR64:$dst), (ins GR64:$src),
 //   */                 
 // }
 // }
+
+let SchedRW = [WriteSystem] in {
+
+    def CFILBL : I<0x1F, MRM0m, (outs), (ins opaquemem:$lbl), "dstlbl\t$lbl", []>, XS;
+
+}   

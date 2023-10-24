@@ -3,12 +3,16 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/ADT/STLExtras.h"
+#include "X86.h"
+#include "X86RegisterInfo.h"
+#include "X86InstrInfo.h"
 
 #include <bitset>
 
 namespace llvm::X86 {
 
-  void runDeclassificationPass(MachineFunction& MF);
+  void runDeclassifyAnnotationPass(MachineFunction& MF);  
+  void runDeclassifyCFIPass(MachineFunction& MF);
 
   class GPRBitMask {
   public:
