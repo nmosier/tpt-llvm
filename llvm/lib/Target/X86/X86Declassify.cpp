@@ -8,6 +8,8 @@
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/CodeGen/MachineJumpTableInfo.h"
 #include "llvm/Support/WithColor.h"
+#include "llvm/CodeGen/MachineFrameInfo.h"
+#include "llvm/CodeGen/LivePhysRegs.h"
 #include "X86Subtarget.h"
 #include <set>
 #include <queue>
@@ -68,19 +70,16 @@ namespace llvm::X86 {
     private:
       std::bitset<NUM_TARGET_REGS> PubRegs;
 
+    public:
       static Register canonicalizeRegister(Register Reg) {
 	if (Reg == X86::EFLAGS)
 	  return Reg;
 	return getX86SubSuperRegisterOrZero(Reg, 64);
       }
 
+    private:
       static bool registerIsAlwaysPublic(Register Reg) {
 	return Reg == X86::NoRegister || Reg == X86::RSP || Reg == X86::RIP;
-      }
-
-      void delPubReg(Register Reg) {
-	Reg = canonicalizeRegister(Reg);
-	PubRegs.reset(Reg);
       }
 
       void removeClobberedRegisters(const MachineInstr& MI);
@@ -99,6 +98,11 @@ namespace llvm::X86 {
 	  PubRegs.set(Reg);
       }
 
+      void delPubReg(Register Reg) {
+	Reg = canonicalizeRegister(Reg);
+	PubRegs.reset(Reg);
+      }
+
       bool hasPubReg(Register Reg) const {
 	Reg = canonicalizeRegister(Reg);
 	if (registerIsAlwaysPublic(Reg))
@@ -106,7 +110,7 @@ namespace llvm::X86 {
 	return PubRegs.test(Reg);
       }
 
-      [[nodiscard]] bool setAllInstrInputsPublic(const MachineInstr& MI);
+      bool setAllInstrInputsPublic(const MachineInstr& MI);
 
       void transferForward(const MachineInstr& MI);
       void transferBackward(const MachineInstr& MI);
@@ -138,6 +142,30 @@ namespace llvm::X86 {
       bool operator!=(const Node& o) const { return tuple() != o.tuple(); }
     };
 
+
+    template <class Range>
+    auto FilterLiveRegsBefore(const MachineInstr& MI, Range&& range) {
+      const MachineBasicBlock& MBB = *MI.getParent();
+      const auto *TRI = MBB.getParent()->getSubtarget().getRegisterInfo();
+      LivePhysRegs live_regs(*TRI);
+      live_regs.addLiveIns(MBB);
+      for (const MachineInstr *it = &MBB.front(); it != &MI; it = it->getNextNode()) {
+	SmallVector<std::pair<MCPhysReg, const MachineOperand *>> clobbers;
+	live_regs.stepForward(*it, clobbers);
+      }
+      std::set<MCRegister> canonical_live_regs;
+      llvm::transform(live_regs, std::inserter(canonical_live_regs, canonical_live_regs.end()),
+		      [] (MCRegister live_reg) -> MCRegister {
+			return Value::canonicalizeRegister(live_reg);
+		      });
+      return llvm::make_filter_range(range, [canonical_live_regs, TRI] (MCRegister reg) -> bool {
+	// errs() << "check: " << TRI->getRegAsmName(reg) << ", returning " << (canonical_live_regs.find(reg) != canonical_live_regs.end()) << "\n";
+	return canonical_live_regs.find(reg) != canonical_live_regs.end();
+      });
+    }
+
+
+    
     bool pointeeHasPublicType(const llvm::Value *Ptr, std::set<const llvm::Value *>& seen) {
       assert(Ptr->getType()->isPointerTy() && "Require pointer value");
       if (!seen.insert(Ptr).second)
@@ -179,9 +207,16 @@ namespace llvm::X86 {
     }
 
     void Value::removeClobberedRegisters(const MachineInstr& MI) {
+      if (MI.isCall()) {
+	// Remove all registers not in regmask.
+	const auto regmask = util::get_call_regmask(MI);
+	PubRegs &= ~regmask;
+      }
+      
       for (const MachineOperand& MO : MI.operands()) {
-	if (MO.isReg() && ((MO.isUse() && MO.isKill()) || MO.isDef())) {
-	  PubRegs.reset(canonicalizeRegister(MO.getReg()));
+	if (MO.isReg()) {
+	  if (MO.isKill() || MO.isDef() || MO.isUndef())
+	    PubRegs.reset(canonicalizeRegister(MO.getReg()));
 	} else if (MO.isRegMask()) {
 	  PubRegs &= util::regmask_to_bitset(MO.getRegMask());
 	}
@@ -190,6 +225,18 @@ namespace llvm::X86 {
 
     bool Value::allInputsPublic(const MachineInstr& MI) const {
       // TODO: IS it okay that memory accesses may come here?
+
+      // If all register operands are undef, then assume we have XOR eax, eax primitive.
+      if (llvm::all_of(MI.operands(), [] (const MachineOperand& MO) -> bool {
+	if (MO.isReg() && MO.isUse()) {
+	  return MO.isUndef();
+	} else {
+	  return true;
+	}
+      })) {
+	return true;
+      }
+      
       for (const MachineOperand& MO : MI.operands())
 	if (MO.isReg() && MO.isUse() && !hasPubReg(MO.getReg()))
 	  return false;
@@ -211,6 +258,21 @@ namespace llvm::X86 {
 	for (const MachineOperand& MO : MI.operands())
 	  if (MO.isReg() && MO.isDef())
 	    addPubReg(MO.getReg());
+
+      // If the instruction is the end of the block, then remove any dead registers.
+#if 0
+      if (!MI.getNextNode()) {
+	const MachineBasicBlock& MBB = *MI.getParent();
+	std::set<MCRegister> live_regs;
+	llvm::transform(MBB.liveouts(), std::inserter(live_regs, live_regs.end()),
+			[] (const auto& live_pair) -> MCRegister {
+			  return canonicalizeRegister(live_pair.PhysReg);
+			});
+	for (unsigned pub_reg = 0; pub_reg < PubRegs.size(); ++pub_reg)
+	  if (PubRegs[pub_reg] && live_regs.find(pub_reg) == live_regs.end())
+	    PubRegs.reset(pub_reg);
+      }
+#endif
     }
 
     static bool isPush(const MachineInstr& MI) {
@@ -251,8 +313,22 @@ namespace llvm::X86 {
       removeClobberedRegisters(MI);
       if (any_output_public)
 	for (const MachineOperand& MO : MI.operands())
-	  if (MO.isReg() && MO.isUse())
+	  if (MO.isReg() && MO.isUse() && !MO.isUndef())
 	    addPubReg(MO.getReg());
+
+      // If the instruction is the beginning of the block, then remove any dead registers.
+#if 0
+      if (!MI.getPrevNode()) {
+	std::set<MCRegister> live_regs;
+	llvm::transform(MI.getParent()->liveins(), std::inserter(live_regs, live_regs.end()),
+			[] (const auto& live_pair) -> MCRegister {
+			  return canonicalizeRegister(live_pair.PhysReg);
+			});
+	for (unsigned pub_reg = 0; pub_reg < PubRegs.size(); ++pub_reg)
+	  if (PubRegs[pub_reg] && live_regs.find(pub_reg) == live_regs.end())
+	    PubRegs.reset(pub_reg);
+      }
+#endif
     }
 
     bool Value::setAllInstrInputsPublic(const MachineInstr& MI) {
@@ -371,6 +447,113 @@ namespace llvm::X86 {
   void BuildCFILabel_Src(MachineBasicBlock& MBB, MachineBasicBlock::iterator MBBI, uint32_t CFILabel) {
     BuildCFILabel(MBB, MBBI, CFILabel, X86::RSI);
   }
+
+
+  static void ValidateDeclassifyMap(MachineFunction& MF, const std::map<MachineInstr *, Node>& Map, StringRef msg) {
+#if 0
+    bool valid = true;
+    
+    for (MachineBasicBlock& MBB : MF) {
+#if 0
+      if (!MBB.empty()) {
+	for (MCRegister gpr : GPRBitMask::gprs()) {
+	  if (gpr == X86::RSP)
+	    continue;
+	  const Value& pre = Map.at(&MBB.front()).pre;
+	  const auto is_live_in = [&MBB] (MCRegister Reg) {
+	    return llvm::any_of(MBB.liveins(), [Reg] (const auto& p) {
+	      return getX86SubSuperRegisterOrZero(p.PhysReg, 64) == Reg;
+	    });
+	  };
+	  if (pre.hasPubReg(gpr) && !is_live_in(gpr)) {
+	    errs() << "REG IS NOT LIVE: " << MF.getSubtarget().getRegisterInfo()->getRegAsmName(gpr) << "\n";
+	    errs() << MBB << "\n\n";
+	    valid = false;
+	  }
+	}
+      }
+#endif
+
+#if 0
+      // Check liveness vs. public registers.
+      const auto *TRI = MF.getSubtarget().getRegisterInfo();
+      LivePhysRegs live_regs(*TRI);
+      live_regs.addLiveIns(MBB);
+      for (MachineInstr& MI : MBB) {
+	const Node& node = Map.at(&MI);
+
+	// Check all public registers are livein.
+	const auto is_live_in = [&live_regs] (MCRegister reg) {
+	  return llvm::any_of(live_regs, [reg] (MCRegister live_reg) {
+	    return getX86SubSuperRegisterOrZero(live_reg, 64) == reg;
+	  });
+	};
+	
+	for (MCRegister gpr : GPRBitMask::gprs()) {
+	  if (gpr == X86::RSP)
+	    continue;
+	  if (node.pre.hasPubReg(gpr) && !is_live_in(gpr)) {
+	    errs() << "\n\n";
+	    errs() << "REG IS NOT LIVE BEFORE: " << TRI->getRegAsmName(gpr) << "\n";
+	    errs() << "Instruction: " << MI;
+	    errs() << "Block:\n" << MBB;
+	    errs() << "Live regs:";
+	    for (MCRegister live_reg : live_regs)
+	      errs() << " " << TRI->getRegAsmName(live_reg);
+	    errs() << "\n\n";
+	    valid = false;
+	  }
+	}
+
+	SmallVector<std::pair<MCPhysReg, const MachineOperand *>> clobbers;
+	live_regs.stepForward(MI, clobbers);
+
+	for (MCRegister gpr : GPRBitMask::gprs()) {
+	  if (gpr == X86::RSP)
+	    continue;
+	  if (node.post.hasPubReg(gpr) && !is_live_in(gpr)) {
+	    errs() << "\n\n";
+	    errs() << "REG IS NOT LIVE AFTER: " << MF.getSubtarget().getRegisterInfo()->getRegAsmName(gpr) << "\n";
+	    errs() << "Instruction: " << MI;
+	    errs() << "Block:\n" << MBB;
+	    errs() << "\n\n";
+	    valid = false;
+	  }
+	}
+      }
+#endif 
+      
+      for (MachineInstr& MI : MBB) {
+	if (MI.isCall()) {
+	  const Value& value = Map.at(&MI).post;
+	  for (const MCRegister Reg : std::initializer_list<MCRegister> {X86::RDI, X86::RSI, X86::RDX, X86::RCX, X86::R8, X86::R9}) {
+	    if (value.hasPubReg(Reg)) {
+	      errs() << "FOUND PUBLIC ARG REGISTER FOLLOWING CALL: " << msg << "\n";
+	      errs() << "Call: " << MI << "\n";
+	      errs() << "Reg: " << MF.getSubtarget().getRegisterInfo()->getRegAsmName(Reg) << "\n";
+	      errs() << "Block:\n";
+	      errs() << MBB;
+	      std::error_code EC;
+	      llvm::raw_fd_ostream f("pubarg.mf", EC);
+	      MF.print(f);
+	      exit(1);
+	    }
+
+	  }
+	}
+      }
+    }
+
+    if (!valid) {
+      {
+	std::error_code EC;
+	llvm::raw_fd_ostream f("invalid.mf", EC);
+	MF.print(f);
+      }
+      exit(1);
+    }
+#endif
+  }
   
   std::map<MachineInstr *, Node> runTaintAnalysis(MachineFunction& MF) {
     std::set<MachineMemOperand *> Declassified;
@@ -423,6 +606,20 @@ namespace llvm::X86 {
       }
     }
 
+    // Declassify all return values if the function's return value is publicly-typed.
+    {
+      const Type *RetTy = MF.getFunction().getReturnType();
+      if (RetTy->isPointerTy() || RetTy->isFloatingPointTy()) {
+	for (MachineBasicBlock& MBB : MF) {
+	  for (MachineInstr& MI : MBB) {
+	    if (MI.isReturn() && !MI.isCall()) {
+	      Map[&MI].pre.setAllInstrInputsPublic(MI);
+	    }
+	  }
+	}
+      }
+    }
+    
     // Declassify the value operands / results of all memory accesses that were
     // flagged as declassified in our IR pass.
     for (MachineBasicBlock& MBB : MF) {
@@ -543,11 +740,19 @@ namespace llvm::X86 {
     const auto dump_taint = [&] (llvm::raw_ostream& os) {
       os << "TAINT FOR FUNCTION " << MF.getFunction().getName() << "\n";
       for (auto& MBB : MF) {
+
+	os << "LIVEINS:";
+	for (const auto& p : MBB.liveins()) {
+	  os << " " << MF.getSubtarget().getRegisterInfo()->getRegAsmName(p.PhysReg);
+	}
+	os << "\n";
+	
 	for (auto& MI : MBB) {
 	  const auto *TRI = MF.getSubtarget().getRegisterInfo();
 	  const auto& node = Map[&MI];
 	  os << "\t";
 	  node.pre.print(os, TRI);
+
 	  os << "\n";
 	  os << MI;
 	  os << "\t";
@@ -556,6 +761,8 @@ namespace llvm::X86 {
 	}
       }
     };
+
+    ValidateDeclassifyMap(MF, Map, "pre-df");
 
     bool changed;
     do {
@@ -638,8 +845,24 @@ namespace llvm::X86 {
 	}
       }
 
+#if 0
+      ValidateDeclassifyMap(MF, Map, "pre-df");
+#endif
+      
     } while (changed);
 
+#if 1
+    if (MF.getFunction().getName() == "cost_compare") {
+      std::error_code EC;
+      llvm::raw_fd_ostream f("taint.out", EC);
+      dump_taint(f);
+
+      llvm::raw_fd_ostream f2("ir.out", EC);
+      MF.getFunction().print(f2);
+    }
+#endif
+    ValidateDeclassifyMap(MF, Map, "post-df");
+    
     return Map;
   }
 
@@ -685,12 +908,70 @@ namespace llvm::X86 {
 
   }
 
+  void runSavePublicCSRsPass(MachineFunction& MF) {
+    auto Map = runTaintAnalysis(MF);
+
+    const auto *TII = MF.getSubtarget().getInstrInfo();
+
+    for (MachineBasicBlock& MBB : MF) {
+      for (MachineInstr& MI : MBB) {
+	if (MI.isCall() && !MI.isTerminator()) {
+	  assert(MI.getNextNode());
+
+	  // The set of callee-saved registers we need to save before and restore after the call are
+	  // exactly the set of GPRs that are (1) in the call's regmask and (2) public on return
+	  // from the call.
+	  const auto call_regmask = util::get_call_regmask(MI);
+	  for (MCRegister csr : GPRBitMask::gprs()) {
+	    if (!call_regmask[csr]) // (1)
+	      continue;
+	    if (!Map[&MI].post.hasPubReg(csr)) // (2)
+	      continue;
+	    
+	    // Create a new frame location for this.
+	    MachineFrameInfo& MFI = MF.getFrameInfo();
+	    const auto FrameIdx = MFI.CreateSpillStackObject(8, Align(8));
+
+	    // Save to slot before call.
+	    auto SaveMBBI = MI.getIterator();
+	    for (; SaveMBBI != MBB.begin() && std::prev(SaveMBBI)->getOpcode() == X86::ADJCALLSTACKDOWN64;
+		 --SaveMBBI)
+	      ;
+	    MachineInstr& SaveInst =
+	      *BuildMI(MBB, SaveMBBI, DebugLoc(), TII->get(X86::MOV64mr))
+	      .addFrameIndex(FrameIdx)
+	      .addImm(1)
+	      .addReg(X86::NoRegister)
+	      .addImm(0)
+	      .addReg(X86::NoRegister)
+	      .addReg(csr);
+	    SaveInst.setFlag(SaveInst.LLSCTDeclassify);
+
+	    // Restore from slot after call.
+	    auto RestoreMBBI = std::next(MI.getIterator());
+	    for (; RestoreMBBI != MBB.end() && RestoreMBBI->getOpcode() == X86::ADJCALLSTACKUP64; ++RestoreMBBI)
+	      ;
+	    MachineInstr& RestoreInst =
+	      *BuildMI(MBB, RestoreMBBI, DebugLoc(), TII->get(X86::MOV64rm), csr)
+	      .addFrameIndex(FrameIdx)
+	      .addImm(1)
+	      .addReg(X86::NoRegister)
+	      .addImm(0)
+	      .addReg(X86::NoRegister);
+	    RestoreInst.setFlag(RestoreInst.LLSCTDeclassify);
+	  }
+	  
+	}
+      }
+    }
+  }
+
 
   void runDeclassifyCFIPass(MachineFunction& MF) {
     auto Map = runTaintAnalysis(MF);
 
     std::set<const MachineBasicBlock *> indirect_entrypoints = {&MF.front()};
-    if (const MachineJumpTableInfo *JTI = MF.getJumpTableInfo ())
+    if (const MachineJumpTableInfo *JTI = MF.getJumpTableInfo())
       for (const auto& JTE : JTI->getJumpTables())
 	llvm::copy(JTE.MBBs, std::inserter(indirect_entrypoints, indirect_entrypoints.end()));
     
@@ -722,7 +1003,7 @@ namespace llvm::X86 {
 
 	  const MachineInstr *Prev = MI.getPrevNode();
 
-	  for (MCRegister gpr : FilterRegMask(Prev, label.gprs()))
+	  for (MCRegister gpr : FilterLiveRegsBefore(MI, FilterRegMask(Prev, label.gprs())))
 	    if (value.hasPubReg(gpr))
 	      label.add(gpr);
 	  
@@ -732,29 +1013,15 @@ namespace llvm::X86 {
       }
     }
 
-    // Destination CFI Labels.
-    
-	
-
-# if 0
-    // Collect stats on what fraction of callee-saved registers are public.
-    {
-      const auto *TII = MF.getSubtarget<X86Subtarget>().getInstrInfo();
-      for (MachineBasicBlock& MBB : MF) {
-	for (MachineInstr& MI : MBB) {
-	  if (MI.isCall() || MI.isReturn()) {
-	    for (MCRegister csr : csrs) {
-	      const Value& value = Map[&MI].pre;
-	      if (value.hasPubReg(csr)) {
-		BuildMI(MBB, MI.getIterator(), DebugLoc(), TII->get(X86::INT3));
-	      }
-	    }
-	  }
-	}
-      }
+#if 0
+    if (MF.getFunction().getName() == "delegitimize_mem_from_attrs") {
+      std::error_code EC;
+      llvm::raw_fd_ostream f("func.out", EC);
+      MF.print(f);
     }
 #endif
     
+
   }
   
 }

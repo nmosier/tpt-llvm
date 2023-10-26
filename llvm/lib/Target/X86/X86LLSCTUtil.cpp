@@ -11,7 +11,13 @@ namespace llvm::X86::util {
       if ((mask[Reg / 32] & (1u << (Reg % 32))) != 0)
 	bitset.set(Reg);
     return bitset;
-  }  
+  }
+
+  std::bitset<NUM_TARGET_REGS> get_call_regmask(const MachineInstr& MI) {
+    const auto it = llvm::find_if(MI.operands(), std::mem_fn(&MachineOperand::isRegMask));
+    assert(it != MI.operands_end());
+    return regmask_to_bitset(it->getRegMask());
+  }
 
   std::map<const Argument *, MCPhysReg> irargs_to_mcargs(const MachineFunction& MF) {
     std::map<const Argument *, MCPhysReg> map;

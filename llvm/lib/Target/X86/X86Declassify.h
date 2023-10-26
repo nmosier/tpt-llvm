@@ -13,7 +13,8 @@ namespace llvm::X86 {
 
   void runDeclassifyAnnotationPass(MachineFunction& MF);  
   void runDeclassifyCFIPass(MachineFunction& MF);
-
+  void runSavePublicCSRsPass(MachineFunction& MF);
+  
   class GPRBitMask {
   public:
     uint16_t getValue() const {

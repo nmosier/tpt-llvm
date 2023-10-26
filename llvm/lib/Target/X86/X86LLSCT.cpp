@@ -404,8 +404,10 @@ namespace {
     if (!EnableLLSCT)
       return false;
 
-    if (EnableDeclassify)
+    if (EnableDeclassify) {
       X86::runDeclassifyAnnotationPass(MF);
+      X86::runSavePublicCSRsPass(MF);
+    }
 
     const StringRef DumpFunctionName = DumpFunction.getValue().c_str();
     if (!DumpFunctionName.empty() && MF.getName().contains(DumpFunctionName))
