@@ -556,6 +556,9 @@ namespace llvm::X86 {
   }
   
   std::map<MachineInstr *, Node> runTaintAnalysis(MachineFunction& MF) {
+    const Function& F = MF.getFunction();
+    const auto *TRI = MF.getSubtarget().getRegisterInfo();
+    
     std::set<MachineMemOperand *> Declassified;
 
     std::map<MachineInstr *, Node> Map, Bak;
@@ -590,37 +593,65 @@ namespace llvm::X86 {
     }
 
     // Add explicitly declassified arguments.
-    if (const MDNode *node = MF.getFunction().getMetadata("llsct.declassify.arg")) {
+    {
       const auto argmap = util::irargs_to_mcargs(MF);
-      for (const Metadata *arg_idx_op : node->operands()) {
-	const uint64_t arg_idx = llvm::cast<ConstantInt>(llvm::cast<ConstantAsMetadata>(arg_idx_op)->getValue())->getLimitedValue();
-	const Argument *irarg = MF.getFunction().getArg(arg_idx);
-	const auto argit = argmap.find(irarg);
-	if (argit != argmap.end()) {
-	  const auto phys_reg = argit->second;
-	  for (MachineBasicBlock *entrypoint : getNonemptyEntrypoints(MF))
-	    Map[&entrypoint->front()].pre.addPubReg(phys_reg);
-	} else {
-	  WithColor::warning() << "argument missing from mapping: " << *irarg << "\n";
+      for (const Argument& irarg : F.args()) {
+	if (irarg.hasAttribute(Attribute::Declassified)) {
+	  const auto argit = argmap.find(&irarg);
+	  if (argit != argmap.end()) {
+	    const auto phys_reg = argit->second;
+	    for (MachineBasicBlock *entrypoint : getNonemptyEntrypoints(MF))
+	      Map[&entrypoint->front()].pre.addPubReg(phys_reg);
+	  } else {
+	    WithColor::warning() << F.getName() << ": argument missing from mapping: " << irarg << "\n";
+	  }
 	}
       }
     }
 
-    // Declassify all return values if the function's return value is publicly-typed.
-    {
-      const Type *RetTy = MF.getFunction().getReturnType();
-      if (RetTy->isPointerTy() || RetTy->isFloatingPointTy()) {
-	for (MachineBasicBlock& MBB : MF) {
-	  for (MachineInstr& MI : MBB) {
-	    if (MI.isReturn() && !MI.isCall()) {
-	      Map[&MI].pre.setAllInstrInputsPublic(MI);
+    // Add explicitly declassified return values.
+    if (F.hasRetAttribute(Attribute::Declassified)) {
+      for (MachineBasicBlock& MBB : MF) {
+	for (MachineInstr& MI : MBB) {
+	  if (MI.isReturn() && !MI.isCall()) {
+	    Map[&MI].pre.setAllInstrInputsPublic(MI);
+	  }
+	}
+      }
+    }
+
+    // Add explicitly declassified call arguments and return values.
+    for (MachineBasicBlock& MBB : MF) {
+      for (MachineInstr& MI : MBB) {
+	if (MI.isCall()) {
+	  if (const CallBase *I = util::mircall_to_ircall(MI)) {
+	    unsigned count = 0;
+	    const auto call_sites_info = MF.getCallSitesInfo().lookup(&MI);
+	    errs() << "\n";
+	    for (const auto& ArgReg : call_sites_info) {
+	      errs() << "(" << TRI->getRegAsmName(ArgReg.Reg) << ", " << ArgReg.ArgNo << ")\n";
+	      if (I->paramHasAttr(ArgReg.ArgNo, Attribute::Declassified)) {
+		Map[&MI].pre.addPubReg(ArgReg.Reg);
+		++count;
+	      }
 	    }
+	    errs() << "\n";
+	    
+	    if (I->hasRetAttr(Attribute::Declassified)) {
+	      for (const MachineOperand& MO : MI.operands()) {
+		if (MO.isReg() && MO.isDef() && MO.isImplicit()) {
+		  Map[&MI].post.addPubReg(MO.getReg());
+		}
+	      }
+	    }
+	  } else {
+	    errs() << F.getName() << ": failed to get IR call for: " << MI;
 	  }
 	}
       }
     }
     
-    // Declassify the value operands / results of all memory accesses that were
+    // declassify the value operands / results of all memory accesses that were
     // flagged as declassified in our IR pass.
     for (MachineBasicBlock& MBB : MF) {
       for (MachineInstr& MI : MBB) {
@@ -639,7 +670,7 @@ namespace llvm::X86 {
 	    auto *ConstArr = dyn_cast<ConstantDataArray>(Global->getInitializer());
 	    if (!ConstArr->isCString())
 	      return false;
-	    if (ConstArr->getAsCString() != "llsct.declassify")
+	    if (ConstArr->getAsCString() != "llsct.declassify.mem")
 	      return false;
 	    return true;
 	  });
@@ -851,14 +882,17 @@ namespace llvm::X86 {
       
     } while (changed);
 
-#if 1
-    if (MF.getFunction().getName() == "cost_compare") {
+#if 0
+    if (MF.getFunction().getName() == "walk_tree_1") {
       std::error_code EC;
       llvm::raw_fd_ostream f("taint.out", EC);
       dump_taint(f);
 
       llvm::raw_fd_ostream f2("ir.out", EC);
       MF.getFunction().print(f2);
+
+      llvm::raw_fd_ostream f3("mf.out", EC);
+      MF.print(f3);
     }
 #endif
     ValidateDeclassifyMap(MF, Map, "post-df");

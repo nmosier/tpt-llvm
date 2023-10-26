@@ -2,6 +2,7 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/IR/Function.h"
 #include "llvm/Support/WithColor.h"
+#include "llvm/IR/IntrinsicInst.h"
 
 namespace llvm::X86::util {
 
@@ -33,5 +34,28 @@ namespace llvm::X86::util {
     }
 
     return map;
+  }
+
+  const CallBase *mircall_to_ircall(const MachineInstr& MI) {
+    assert(MI.isCall());
+    const MachineBasicBlock& MBB = *MI.getParent();
+    const BasicBlock *BB = MBB.getBasicBlock();
+    if (!BB)
+      return nullptr;
+    SmallVector<const CallBase *> ir_calls;
+    SmallVector<const MachineInstr *> mir_calls;
+    for (const MachineInstr& MI : MBB)
+      if (MI.isCall())
+	mir_calls.push_back(&MI);
+    for (const Instruction& I : *BB)
+      if (const CallBase *C = dyn_cast<CallBase>(&I))
+	if (!isa<IntrinsicInst>(C))
+	  ir_calls.push_back(C);
+    if (ir_calls.size() != mir_calls.size())
+      return nullptr;
+
+    const auto mir_it = llvm::find(mir_calls, &MI);
+    assert(mir_it != mir_calls.end());
+    return ir_calls[mir_it - mir_calls.begin()];
   }
 }
