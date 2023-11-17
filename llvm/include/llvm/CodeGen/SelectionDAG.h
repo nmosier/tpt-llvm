@@ -282,6 +282,8 @@ class SelectionDAG {
     MDNode *HeapAllocSite = nullptr;
     MDNode *PCSections = nullptr;
     bool NoMerge = false;
+
+    NodeExtraInfo(): CSInfo(nullptr) {}
   };
   /// Out-of-line extra information for SDNodes.
   DenseMap<const SDNode *, NodeExtraInfo> SDEI;
@@ -2250,7 +2252,7 @@ public:
   /// Return CallSiteInfo associated with Node, or a default if none exists.
   CallSiteInfo getCallSiteInfo(const SDNode *Node) {
     auto I = SDEI.find(Node);
-    return I != SDEI.end() ? std::move(I->second).CSInfo : CallSiteInfo();
+    return I != SDEI.end() ? std::move(I->second).CSInfo : CallSiteInfo(nullptr);
   }
   /// Set HeapAllocSite to be associated with Node.
   void addHeapAllocSite(const SDNode *Node, MDNode *MD) {

@@ -896,7 +896,9 @@ void MachineFunction::copyCallSiteInfo(const MachineInstr *Old,
     return;
 
   CallSiteInfo CSInfo = CSIt->second;
-  CallSitesInfo[New] = CSInfo;
+  const auto result = CallSitesInfo.insert(std::make_pair(New, CSInfo));
+  if (!result.second)
+    result.first->second = std::move(CSInfo);
 }
 
 void MachineFunction::moveCallSiteInfo(const MachineInstr *Old,
@@ -915,7 +917,7 @@ void MachineFunction::moveCallSiteInfo(const MachineInstr *Old,
 
   CallSiteInfo CSInfo = std::move(CSIt->second);
   CallSitesInfo.erase(CSIt);
-  CallSitesInfo[New] = CSInfo;
+  CallSitesInfo.insert(std::make_pair(New, std::move(CSInfo)));
 }
 
 void MachineFunction::setDebugInstrNumberingCount(unsigned Num) {

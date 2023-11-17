@@ -21,6 +21,15 @@ namespace llvm::X86::util {
   }
 
   std::map<const Argument *, MCPhysReg> irargs_to_mcargs(const MachineFunction& MF) {
+    const Function& F = MF.getFunction();
+    
+    // FIXME: hotfix for i128 argument LLVM bug
+    if (llvm::any_of(F.args(), [] (const Argument& A) -> bool {
+      return A.getType()->isIntegerTy(128);
+    })) {
+      return {};
+    }
+    
     std::map<const Argument *, MCPhysReg> map;
 
     for (const CCValAssign& VA : MF.FormalArgLocs) {
@@ -36,6 +45,7 @@ namespace llvm::X86::util {
     return map;
   }
 
+#if 0
   const CallBase *mircall_to_ircall(const MachineInstr& MI) {
     assert(MI.isCall());
     const MachineBasicBlock& MBB = *MI.getParent();
@@ -58,4 +68,6 @@ namespace llvm::X86::util {
     assert(mir_it != mir_calls.end());
     return ir_calls[mir_it - mir_calls.begin()];
   }
+#endif
+  
 }

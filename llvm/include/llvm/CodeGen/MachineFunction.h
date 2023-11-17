@@ -74,6 +74,7 @@ class TargetRegisterClass;
 class TargetSubtargetInfo;
 struct WasmEHFuncInfo;
 struct WinEHFuncInfo;
+class CallBase;
 
 template <> struct ilist_alloc_traits<MachineBasicBlock> {
   void deleteNode(MachineBasicBlock *MBB);
@@ -447,8 +448,16 @@ public:
     }
   };
   /// Vector of call argument and its forwarding register.
-  using CallSiteInfo = SmallVector<ArgRegPair, 1>;
-  using CallSiteInfoImpl = SmallVectorImpl<ArgRegPair>;
+  struct CallSiteInfo {
+    const CallBase *Call;
+    SmallVector<ArgRegPair, 1> ArgRegPairs;
+    
+    template <class Range>
+    CallSiteInfo(const CallBase *Call, const Range& ArgRegPairs): Call(Call), ArgRegPairs(ArgRegPairs) {}
+    CallSiteInfo(const CallBase *Call): Call(Call) {}
+    // CallSiteInfo(): Call(nullptr) {}
+  };
+  using CallSiteInfoImpl = CallSiteInfo;
 
 private:
   Delegate *TheDelegate = nullptr;
@@ -1242,7 +1251,7 @@ public:
 
   /// Start tracking the arguments passed to the call \p CallI.
   void addCallArgsForwardingRegs(const MachineInstr *CallI,
-                                 CallSiteInfoImpl &&CallInfo) {
+				 CallSiteInfo&& CallInfo) {
     assert(CallI->isCandidateForCallSiteEntry());
     bool Inserted =
         CallSitesInfo.try_emplace(CallI, std::move(CallInfo)).second;

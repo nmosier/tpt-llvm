@@ -624,28 +624,26 @@ namespace llvm::X86 {
     for (MachineBasicBlock& MBB : MF) {
       for (MachineInstr& MI : MBB) {
 	if (MI.isCall()) {
-	  if (const CallBase *I = util::mircall_to_ircall(MI)) {
-	    unsigned count = 0;
-	    const auto call_sites_info = MF.getCallSitesInfo().lookup(&MI);
-	    errs() << "\n";
-	    for (const auto& ArgReg : call_sites_info) {
-	      errs() << "(" << TRI->getRegAsmName(ArgReg.Reg) << ", " << ArgReg.ArgNo << ")\n";
-	      if (I->paramHasAttr(ArgReg.ArgNo, Attribute::Declassified)) {
-		Map[&MI].pre.addPubReg(ArgReg.Reg);
-		++count;
-	      }
-	    }
-	    errs() << "\n";
-	    
-	    if (I->hasRetAttr(Attribute::Declassified)) {
-	      for (const MachineOperand& MO : MI.operands()) {
-		if (MO.isReg() && MO.isDef() && MO.isImplicit()) {
-		  Map[&MI].post.addPubReg(MO.getReg());
+	  const auto call_sites_info_it = MF.getCallSitesInfo().find(&MI);
+	  if (call_sites_info_it != MF.getCallSitesInfo().end()) {
+	    const auto call_sites_info = call_sites_info_it->second;
+	    if (const CallBase *I = call_sites_info.Call) {
+	      for (const auto& ArgReg : call_sites_info.ArgRegPairs) {
+		if (I->paramHasAttr(ArgReg.ArgNo, Attribute::Declassified)) {
+		  Map[&MI].pre.addPubReg(ArgReg.Reg);
 		}
 	      }
+	    
+	      if (I->hasRetAttr(Attribute::Declassified)) {
+		for (const MachineOperand& MO : MI.operands()) {
+		  if (MO.isReg() && MO.isDef() && MO.isImplicit()) {
+		    Map[&MI].post.addPubReg(MO.getReg());
+		  }
+		}
+	      }
+	    } else {
+	      errs() << F.getName() << ": failed to get IR call for: " << MI;
 	    }
-	  } else {
-	    errs() << F.getName() << ": failed to get IR call for: " << MI;
 	  }
 	}
       }

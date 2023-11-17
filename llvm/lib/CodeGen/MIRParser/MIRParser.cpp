@@ -411,12 +411,13 @@ bool MIRParserImpl::initializeCallSiteInfo(
                          "instruction. Instruction at bb:") +
                    Twine(MILoc.BlockNum) + " at offset:" + Twine(MILoc.Offset) +
                    " is not a call instruction");
-    MachineFunction::CallSiteInfo CSInfo;
+    MachineFunction::CallSiteInfo CSInfo(nullptr);
+    // TODO: Not parsing call instruction.
     for (auto ArgRegPair : YamlCSInfo.ArgForwardingRegs) {
       Register Reg;
       if (parseNamedRegisterReference(PFS, Reg, ArgRegPair.Reg.Value, Error))
         return error(Error, ArgRegPair.Reg.SourceRange);
-      CSInfo.emplace_back(Reg, ArgRegPair.ArgNo);
+      CSInfo.ArgRegPairs.emplace_back(Reg, ArgRegPair.ArgNo);
     }
 
     if (TM.Options.EmitCallSiteInfo)
