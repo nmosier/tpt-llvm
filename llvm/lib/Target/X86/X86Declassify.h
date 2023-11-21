@@ -44,7 +44,8 @@ namespace llvm::X86 {
       {X86::RSI,  4},
       {X86::RDI,  5},
       {X86::RBP,  6},
-      {X86::RSP,  7},
+      {X86::EFLAGS, 7},
+      // {X86::RSP,  7}, // This is always public anyway.
       {X86::R8,   8},
       {X86::R9,   9},
       {X86::R10, 10},

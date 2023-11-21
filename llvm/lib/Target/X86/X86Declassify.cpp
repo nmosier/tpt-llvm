@@ -15,11 +15,53 @@
 #include <queue>
 #include <bitset>
 #include "X86LLSCTUtil.h"
+#include "llvm/TPE.h"
 
 namespace llvm::X86 {
 
   namespace {
+    class Node;
+  }
 
+  std::map<MachineInstr *, Node> runTaintAnalysis(MachineFunction& MF);
+
+  namespace {
+
+    enum PrivacyPolicy {
+      PrivacyPolicyNone,
+      sandbox,
+      ct,
+      ctdecl,
+    };
+
+    cl::opt<PrivacyPolicy> PrivacyPolicyOpt {
+      "tpe-privacy-policy",
+      cl::desc("TPE's Privacy Policy"),
+      cl::values(clEnumVal(sandbox, "sandbox privacy policy (all registers always public)"),
+		 clEnumVal(ct,      "constant-time privacy policy (without declassification)"),
+		 clEnumVal(ctdecl,  "constant-time privacy policy (with declassification)")),
+      cl::init(PrivacyPolicyNone),
+    };
+    
+  }
+}
+
+namespace tpe {
+  using namespace llvm::X86;
+  bool allowDeclassify() {
+    switch (PrivacyPolicyOpt) {
+    case ct: return false;
+    case ctdecl: return true;
+    default:
+      llvm_unreachable("Should not be called for non-CT threat models!");
+    }
+  }
+}
+
+using tpe::allowDeclassify;
+  
+namespace llvm::X86 {
+  namespace {
     bool IsIndirectControlFlow(const MachineInstr& MI) {
       if (MI.isIndirectBranch() || MI.isReturn()) {
 	return true;
@@ -251,10 +293,11 @@ namespace llvm::X86 {
     }
     
     void Value::transferForward(const MachineInstr& MI) {
+      const auto *TRI = MI.getParent()->getParent()->getSubtarget().getRegisterInfo();
       // FIXME: Should handle memory accesses specially, rather than just saying !MI.mayLoad().
-      const bool any_input_public = !MI.mayLoad() && !MI.isCall() && allInputsPublic(MI);
+      const bool all_inputs_public = !MI.mayLoad() && !MI.isCall() && allInputsPublic(MI);
       removeClobberedRegisters(MI);
-      if (any_input_public)
+      if (all_inputs_public)
 	for (const MachineOperand& MO : MI.operands())
 	  if (MO.isReg() && MO.isDef())
 	    addPubReg(MO.getReg());
@@ -309,8 +352,17 @@ namespace llvm::X86 {
     }
 
     void Value::transferBackward(const MachineInstr& MI) {
-      const bool any_output_public = !MI.isCall() && !isPush(MI) && anyOutputPublic(MI);
+      bool any_output_public = !MI.isCall() && !isPush(MI) && anyOutputPublic(MI);
+      size_t num_private_ins = 0;
       removeClobberedRegisters(MI);
+      if (allowDeclassify()) {
+	// Also check that all but one input is public, i.e., at most one input is private.
+	num_private_ins = llvm::count_if(MI.operands(), [&] (const MachineOperand& MO) -> bool {
+	  return MO.isReg() && MO.isUse() && !hasPubReg(MO.getReg());
+	});
+	if (num_private_ins > 1)
+	  any_output_public = false;
+      }
       if (any_output_public)
 	for (const MachineOperand& MO : MI.operands())
 	  if (MO.isReg() && MO.isUse() && !MO.isUndef())
@@ -554,27 +606,16 @@ namespace llvm::X86 {
     }
 #endif
   }
-  
-  std::map<MachineInstr *, Node> runTaintAnalysis(MachineFunction& MF) {
+
+  std::map<MachineInstr *, Node> runConstantTimePrivacyAnalysis(MachineFunction& MF) {
+    assert(PrivacyPolicyOpt == ct || PrivacyPolicyOpt == ctdecl);
+    
     const Function& F = MF.getFunction();
     const auto *TRI = MF.getSubtarget().getRegisterInfo();
     
     std::set<MachineMemOperand *> Declassified;
 
     std::map<MachineInstr *, Node> Map, Bak;
-
-    // All input registers are assumed to be public.
-    // FIXME: No longer make this assumption.
-#if 0
-    {
-      for (MachineBasicBlock *EntryMBB : getNonemptyEntrypoints(MF)) {
-	auto& Entry = Map[&EntryMBB->front()].pre;
-	for (const auto& [MCReg, Reg] : MF.getRegInfo().liveins()) {
-	  Entry.addPubReg(MCReg);
-	}
-      }
-    }
-#endif
 
     // Add the inputs/outputs of explicitly declassified load/stores via the MIFlag LLSCTDeclassify.
     for (MachineBasicBlock& MBB : MF) {
@@ -851,18 +892,20 @@ namespace llvm::X86 {
 	}
 
 	// Meet backward
-	std::optional<Value> Bwd;
-	for (MachineBasicBlock *SuccMBB : getNonemptySuccessors(MBB)) {
-	  auto& In = Map[&SuccMBB->front()].pre;
-	  if (Bwd) {
-	    Bwd->meetBackward(In);
-	  } else {
-	    Bwd = In;
+	if (!allowDeclassify()) {
+	  std::optional<Value> Bwd;
+	  for (MachineBasicBlock *SuccMBB : getNonemptySuccessors(MBB)) {
+	    auto& In = Map[&SuccMBB->front()].pre;
+	    if (Bwd) {
+	      Bwd->meetBackward(In);
+	    } else {
+	      Bwd = In;
+	    }
 	  }
-	}
-	if (Bwd) {
-	  changed |= Map[&MBB.back()].post.set_union(*Bwd);
-	}
+	  if (Bwd) {
+	    changed |= Map[&MBB.back()].post.set_union(*Bwd);
+	  }
+	} 
 
 	// Within same block
 	for (auto it1 = MBB.begin(), it2 = std::next(it1); it2 != MBB.end(); ++it1, ++it2) {
@@ -879,6 +922,7 @@ namespace llvm::X86 {
 #endif
       
     } while (changed);
+
 
 #if 0
     if (MF.getFunction().getName() == "walk_tree_1") {
@@ -999,6 +1043,7 @@ namespace llvm::X86 {
   }
 
 
+  // TODO: Rename.
   void runDeclassifyCFIPass(MachineFunction& MF) {
     auto Map = runTaintAnalysis(MF);
 
@@ -1009,10 +1054,98 @@ namespace llvm::X86 {
     
     for (MachineBasicBlock& MBB : MF) {
       for (MachineInstr& MI : MBB) {
+	if (MachineInstr *Prev = MI.getPrevNode())
+	  if (Prev->isTerminator())
+	    continue;
+	
 	const Value& value = Map[&MI].pre;
 
+	const auto get_label = [&] (const Value& value) -> uint32_t {
+	  GPRBitMask label;
+	  for (MCRegister gpr : FilterRegMask(&MI, label.gprs()))
+	    if (value.hasPubReg(gpr))
+	      label.add(gpr);
+	  return label.getValue();
+	};
+
+	const auto declassifies = [&] (const uint32_t label1, const uint32_t label2) {
+	  if ((label1 & label2) == label2) {
+	    return false;
+	  } else {
+	    // In constant-time w/o declassification, this should never occur
+	    assert(allowDeclassify());
+	    return true;
+	  }
+	};
+
+	const auto deviates = [&] (MachineInstr& MI) -> bool {
+	  if (MI.isCall() || MI.isReturn() || MI.isTerminator() || isPush(MI)) {
+	    return false;
+	  } else {
+	    // Check if any input is private.
+	    const bool any_input_private = llvm::any_of(MI.operands(), [&] (const MachineOperand& MO) -> bool {
+	      return MO.isReg() && MO.isUse() && !MO.isUndef() && !Map[&MI].pre.hasPubReg(MO.getReg());
+	    });
+	    if (any_input_private) {
+	      const bool any_output_public = llvm::any_of(MI.operands(), [&] (const MachineOperand& MO) -> bool {
+		return MO.isReg() && MO.isDef() && Map[&MI].post.hasPubReg(MO.getReg());
+	      });
+	      if (any_output_public) {
+		assert(allowDeclassify());
+		return true;
+	      }
+	    }
+	    return false;
+	  }
+	};
+
+	// Check if there is a privacy type mismatch if MI is not an indirect control-flow instruction.
+	const bool guard_src = [&] () {
+	  if (MI.isCall() || MI.isReturn()) {
+	    return true;
+	  } else if (MI.getNextNode()) {
+	    return declassifies(get_label(Map[&MI].post), get_label(Map[MI.getNextNode()].pre))
+	      || deviates(MI);
+	  } else {
+	    return llvm::any_of(MBB.successors(), [&] (MachineBasicBlock *Succ) -> bool {
+	      if (Succ->empty()) {
+		return true;
+	      } else {
+		return declassifies(get_label(Map[&MI].post), get_label(Map[&Succ->front()].pre));
+	      }
+	    });
+	  }
+	}();
+
+	const auto guard_dst = [&] () {
+	  if (MBB.getIterator() == MF.begin() && MI.getIterator() == MBB.begin()) {
+	    return true;
+	  } else if (MI.getIterator() == MBB.begin() && indirect_entrypoints.find(&MBB) != indirect_entrypoints.end()) {
+	    return true;
+	  } else if (MI.getPrevNode() && MI.getPrevNode()->isCall() && !MI.getPrevNode()->isReturn()) {
+	    return true;
+	  } else if (MI.getPrevNode()) {
+	    return declassifies(get_label(Map[MI.getPrevNode()].post), get_label(Map[&MI].pre))
+	      || deviates(*MI.getPrevNode());
+	  } else {
+	    return llvm::any_of(MBB.predecessors(), [&] (MachineBasicBlock *Pred) -> bool {
+	      if (Pred->empty()) {
+		return true;
+	      } else {
+		return declassifies(get_label(Map[&Pred->back()].post), get_label(Map[&MI].pre));
+	      }
+	    });
+	  }
+	}();
+
+	if (guard_src || guard_dst) {
+	  if (MachineInstr *Prev = MI.getPrevNode()) {
+	    assert(!Prev->isTerminator());
+	  }
+	}
+
 	// Source CFI labels.
-	if (IsIndirectControlFlow(MI)) {
+	if (guard_src) {
 	  //	  llvm::errs() << "src: " << MI << "\n";
 	  
 	  GPRBitMask label;
@@ -1027,9 +1160,7 @@ namespace llvm::X86 {
 
 
 	// Destination CFI labels.
-	if ((!MI.getPrevNode() && indirect_entrypoints.find(&MBB) != indirect_entrypoints.end()) ||
-	    (MI.getPrevNode() && MI.getPrevNode()->isCall() && !MI.getPrevNode()->isReturn())) {
-	  // llvm::errs() << "dst: " << MI << "\n";
+	if (guard_dst) {
 
 	  GPRBitMask label;
 
@@ -1045,15 +1176,40 @@ namespace llvm::X86 {
       }
     }
 
-#if 0
-    if (MF.getFunction().getName() == "delegitimize_mem_from_attrs") {
-      std::error_code EC;
-      llvm::raw_fd_ostream f("func.out", EC);
-      MF.print(f);
-    }
-#endif
-    
+  }
 
+
+
+
+  std::map<MachineInstr *, Node> runSandboxPrivacyAnalysis(MachineFunction& MF) {
+    assert(PrivacyPolicyOpt == sandbox);
+
+    std::map<MachineInstr *, Node> Map;
+    for (MachineBasicBlock& MBB : MF) {
+      for (MachineInstr& MI : MBB) {
+	Value value;
+	for (MCRegister Reg : GPRBitMask::gprs())
+	  value.addPubReg(Reg);
+	Map[&MI].pre = Map[&MI].post = value;
+      }
+    }
+
+    return Map;
+  }
+
+  std::map<MachineInstr *, Node> runTaintAnalysis(MachineFunction& MF) {
+    switch (PrivacyPolicyOpt) {
+    case PrivacyPolicyNone:
+      WithColor::error() << "no threat model specified, refusing to compile\n";
+      std::exit(1);
+    case sandbox:
+      return runSandboxPrivacyAnalysis(MF);
+    case ct:
+    case ctdecl:
+      return runConstantTimePrivacyAnalysis(MF);
+    default:
+      llvm_unreachable("unexpected privacy policy enum");
+    }
   }
   
 }
