@@ -35,6 +35,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
+#include "X86LLSCT.h"
 
 using namespace llvm;
 
@@ -289,13 +290,23 @@ X86RegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
 
   // If attribute NoCallerSavedRegisters exists then we set X86_INTR calling
   // convention because it has the CSR list.
-  if (MF->getFunction().hasFnAttribute("no_caller_saved_registers"))
+  if (F.hasFnAttribute("no_caller_saved_registers"))
     CC = CallingConv::X86_INTR;
 
   // If atribute specified, override the CSRs normally specified by the
   // calling convention and use the empty set instead.
-  if (MF->getFunction().hasFnAttribute("no_callee_saved_registers"))
+  if (F.hasFnAttribute("no_callee_saved_registers"))
     return CSR_NoRegs_SaveList;
+
+  if (llsct::NoCalleeSavedRegs() && F.hasAddressTaken()) {
+    switch (F.getLinkage()) {
+    case Function::InternalLinkage:
+    case Function::PrivateLinkage:
+    default:
+      return CSR_NoRegs_SaveList;
+    }
+  }
+  
 
   switch (CC) {
   case CallingConv::GHC:

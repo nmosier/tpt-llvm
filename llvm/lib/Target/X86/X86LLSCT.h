@@ -4,10 +4,15 @@
 
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineMemOperand.h"
+#include "llvm/Support/CommandLine.h"
+
+#warning "Should move this to TPE.h"
 
 // TODO: Move to llsct namespace?
 namespace llsct {
   extern bool EnableLLSCT;
+
+  bool NoCalleeSavedRegs();
 }
 
 namespace llvm::X86 {

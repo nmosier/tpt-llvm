@@ -113,7 +113,10 @@ public:
     NoMerge      = 1 << 15,             // Passes that drop source location info
                                         // (e.g. branch folding) should skip
                                         // this instruction.
-    LLSCTDeclassify = 1 << 16,          // LLSCT's Declassify prefix.
+    TPEPrivM     = 1 << 16,             // TPE's PRIVM prefix.
+    TPEPubM      = 1 << 17,             // Indicates that this access is publicly
+                                        // typed. Absence of PRIVM or PUBM
+                                        // means the type is undetermined.
   };
 
 private:

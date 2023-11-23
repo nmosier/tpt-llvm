@@ -996,8 +996,8 @@ void X86MCInstLower::Lower(const MachineInstr *MI, MCInst &OutMI) const {
   }
 
 
-  // LLSCT: Propagate MI->MC flags.
-  llsct::X86MCInstLowerLLSCT(MI, OutMI);
+  // TPE: Propagate MI->MC flags.
+  tpe::X86MCInstLowerTPE(MI, OutMI);
   
 }
 

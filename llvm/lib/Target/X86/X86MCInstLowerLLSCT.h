@@ -3,8 +3,8 @@
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/MC/MCInst.h"
 
-namespace llsct {
+namespace tpe {
 
-  void X86MCInstLowerLLSCT(const llvm::MachineInstr *MI, llvm::MCInst& OutMI);
+  void X86MCInstLowerTPE(const llvm::MachineInstr *MI, llvm::MCInst& OutMI);
   
 }

@@ -17,6 +17,8 @@
 #include "X86LLSCTUtil.h"
 #include "llvm/TPE.h"
 
+using namespace tpe;
+
 namespace llvm::X86 {
 
   namespace {
@@ -25,28 +27,25 @@ namespace llvm::X86 {
 
   std::map<MachineInstr *, Node> runTaintAnalysis(MachineFunction& MF);
 
-  namespace {
-
-    enum PrivacyPolicy {
-      PrivacyPolicyNone,
-      sandbox,
-      ct,
-      ctdecl,
-    };
-
-    cl::opt<PrivacyPolicy> PrivacyPolicyOpt {
-      "tpe-privacy-policy",
-      cl::desc("TPE's Privacy Policy"),
-      cl::values(clEnumVal(sandbox, "sandbox privacy policy (all registers always public)"),
-		 clEnumVal(ct,      "constant-time privacy policy (without declassification)"),
-		 clEnumVal(ctdecl,  "constant-time privacy policy (with declassification)")),
-      cl::init(PrivacyPolicyNone),
-    };
-    
-  }
 }
 
 namespace tpe {
+
+  static llvm::cl::opt<bool> EnablePrivRegs {
+    "tpe-privr",
+    llvm::cl::init(true),
+    llvm::cl::desc("[TPE] Enable privr instruction insertion"),
+  };
+  
+  llvm::cl::opt<PrivacyPolicy> PrivacyPolicyOpt {
+    "tpe-privacy-policy",
+    llvm::cl::desc("TPE's Privacy Policy"),
+    llvm::cl::values(clEnumVal(sandbox, "sandbox privacy policy (all registers always public)"),
+	       clEnumVal(ct,      "constant-time privacy policy (without declassification)"),
+	       clEnumVal(ctdecl,  "constant-time privacy policy (with declassification)")),
+    llvm::cl::init(PrivacyPolicyNone),
+  };
+  
   using namespace llvm::X86;
   bool allowDeclassify() {
     switch (PrivacyPolicyOpt) {
@@ -62,25 +61,6 @@ using tpe::allowDeclassify;
   
 namespace llvm::X86 {
   namespace {
-    bool IsIndirectControlFlow(const MachineInstr& MI) {
-      if (MI.isIndirectBranch() || MI.isReturn()) {
-	return true;
-      } else if (MI.isCall()) {
-	switch (MI.getOpcode()) {
-	case X86::CALL64pcrel32:
-	  return false;
-	case X86::CALL64r:
-	case X86::CALL64m:
-	  return true;
-	default:
-	  errs() << __FILE__ << ":" << __LINE__ << ": unhandled opcode: " << MI << "\n";
-	  report_fatal_error("exiting");
-	}
-      } else {
-	return false;
-      }
-    }
-
     template <class Range>
     auto FilterRegMask(const MachineInstr *MI, Range&& range) {
       const uint32_t *RegMask = nullptr;
@@ -293,7 +273,6 @@ namespace llvm::X86 {
     }
     
     void Value::transferForward(const MachineInstr& MI) {
-      const auto *TRI = MI.getParent()->getParent()->getSubtarget().getRegisterInfo();
       // FIXME: Should handle memory accesses specially, rather than just saying !MI.mayLoad().
       const bool all_inputs_public = !MI.mayLoad() && !MI.isCall() && allInputsPublic(MI);
       removeClobberedRegisters(MI);
@@ -482,7 +461,16 @@ namespace llvm::X86 {
   }
 
   void BuildCFILabel(MachineBasicBlock& MBB, MachineBasicBlock::iterator MBBI,
-		     uint32_t CFILabel, MCRegister BaseReg) {
+		     uint32_t CFILabel_, MCRegister BaseReg) {
+    if (!tpe::EnablePrivRegs)
+      return;
+    
+    int64_t CFILabel = CFILabel_;
+#if 0
+    // HACK: Force labels < 256 to use 1-byte encoding.
+    if (CFILabel < 256)
+      CFILabel = (int8_t) CFILabel;
+#endif
     const auto *TII = MBB.getParent()->getSubtarget<X86Subtarget>().getInstrInfo();
     BuildMI(MBB, MBBI, DebugLoc(), TII->get(X86::CFILBL))
       .addReg(BaseReg)
@@ -611,7 +599,6 @@ namespace llvm::X86 {
     assert(PrivacyPolicyOpt == ct || PrivacyPolicyOpt == ctdecl);
     
     const Function& F = MF.getFunction();
-    const auto *TRI = MF.getSubtarget().getRegisterInfo();
     
     std::set<MachineMemOperand *> Declassified;
 
@@ -620,7 +607,7 @@ namespace llvm::X86 {
     // Add the inputs/outputs of explicitly declassified load/stores via the MIFlag LLSCTDeclassify.
     for (MachineBasicBlock& MBB : MF) {
       for (MachineInstr& MI : MBB) {
-	if (MI.getFlag(MI.LLSCTDeclassify)) {
+	if (MI.getFlag(MI.TPEPubM)) {
 	  if (MI.mayStore())
 	    for (const MachineOperand& MO : MI.operands())
 	      if (MO.isReg() && MO.isUse())
@@ -696,6 +683,7 @@ namespace llvm::X86 {
       for (MachineInstr& MI : MBB) {
 	const bool should_declassify =
 	  any_of(MI.memoperands(), [] (const MachineMemOperand *MemOp) -> bool {
+	    // Is the memory operand's data type implicitly public?
 	    auto *II = dyn_cast_or_null<IntrinsicInst>(MemOp->getValue());
 	    if (!II)
 	      return false;
@@ -713,7 +701,7 @@ namespace llvm::X86 {
 	      return false;
 	    return true;
 	  });
-	
+
 	if (!should_declassify)
 	  continue;
 
@@ -807,7 +795,7 @@ namespace llvm::X86 {
 
 
     // DEBUG ONLY
-    const auto dump_taint = [&] (llvm::raw_ostream& os) {
+    [[maybe_unused]] const auto dump_taint = [&] (llvm::raw_ostream& os) {
       os << "TAINT FOR FUNCTION " << MF.getFunction().getName() << "\n";
       for (auto& MBB : MF) {
 
@@ -951,6 +939,12 @@ namespace llvm::X86 {
       for (MachineInstr& MI : MBB) {
 	if (!MI.mayLoadOrStore())
 	  continue;
+
+	if (PrivacyPolicyOpt == PrivacyPolicy::sandbox) {
+	  MI.setFlag(MachineInstr::TPEPubM);
+	  continue;
+	}
+	
 	const int MemIdx = getMemRefBeginIdx(MI);
 	if (MemIdx < 0)
 	  continue;
@@ -973,7 +967,9 @@ namespace llvm::X86 {
 	}
 
 	if ((MI.mayLoad() && AnyOutputPublic) || (MI.mayStore() && AllInputsPublic)) {
-	  MI.setFlag(MachineInstr::LLSCTDeclassify);
+	  MI.setFlag(MachineInstr::TPEPubM);
+	} else {
+	  MI.setFlag(MachineInstr::TPEPrivM);
 	}
       }
     }
@@ -984,7 +980,12 @@ namespace llvm::X86 {
 
   }
 
+#if 0
   void runSavePublicCSRsPass(MachineFunction& MF) {
+    // Don't need to do this for sandbox isolation because any callee pushes/pops will be publicly typed as well.
+    if (PrivacyPolicyOpt == PrivacyPolicy::sandbox)
+      return;
+    
     auto Map = runTaintAnalysis(MF);
 
     const auto *TII = MF.getSubtarget().getInstrInfo();
@@ -1021,7 +1022,7 @@ namespace llvm::X86 {
 	      .addImm(0)
 	      .addReg(X86::NoRegister)
 	      .addReg(csr);
-	    SaveInst.setFlag(SaveInst.LLSCTDeclassify);
+	    SaveInst.setFlag(MachineInstr::TPEPubM);
 
 	    // Restore from slot after call.
 	    auto RestoreMBBI = std::next(MI.getIterator());
@@ -1034,14 +1035,14 @@ namespace llvm::X86 {
 	      .addReg(X86::NoRegister)
 	      .addImm(0)
 	      .addReg(X86::NoRegister);
-	    RestoreInst.setFlag(RestoreInst.LLSCTDeclassify);
+	    RestoreInst.setFlag(MachineInstr::TPEPubM);
 	  }
 	  
 	}
       }
     }
   }
-
+#endif
 
   // TODO: Rename.
   void runDeclassifyCFIPass(MachineFunction& MF) {
@@ -1154,6 +1155,9 @@ namespace llvm::X86 {
 	  for (MCRegister gpr : FilterRegMask(&MI, label.gprs()))
 	    if (value.hasPubReg(gpr))
 	      label.add(gpr);
+
+	  if (PrivacyPolicyOpt == tpe::sandbox)
+	    label.addAll();
 	  
 	  BuildCFILabel_Src(MBB, MI.getIterator(), label.getValue());
 	}
@@ -1169,6 +1173,9 @@ namespace llvm::X86 {
 	  for (MCRegister gpr : FilterLiveRegsBefore(MI, FilterRegMask(Prev, label.gprs())))
 	    if (value.hasPubReg(gpr))
 	      label.add(gpr);
+
+	  if (PrivacyPolicyOpt == tpe::sandbox)
+	    label.addAll();
 	  
 	  BuildCFILabel_Dst(MBB, MI.getIterator(), label.getValue());
 	}

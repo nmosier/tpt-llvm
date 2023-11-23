@@ -9,21 +9,20 @@
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Support/WithColor.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/TPE.h"
 
 using namespace llvm;
 
-namespace llsct {
+namespace tpe {
 
-  static int verbose = false; // TODO: 
-
-  static cl::opt<bool> EnableLLSCTIndAddr {
-    "llsct-indaddr",
-    cl::desc("Enable LLSCT Indirect Addressibility Annotations"),
+  static cl::opt<bool> EnablePrivMem {
+    "tpe-privm",
     cl::init(true),
+    cl::desc("[TPE] Enable insertion of PRIVM prefixes"),
   };
 
-  void X86MCInstLowerLLSCT(const MachineInstr *MI, MCInst& OutMI) {
-    if (!EnableLLSCT)
+  void X86MCInstLowerTPE(const MachineInstr *MI, MCInst& OutMI) {
+    if (!(llsct::EnableLLSCT && EnablePrivMem))
       return;
     
     const auto addFlag = [&OutMI] (auto f) {
@@ -32,55 +31,27 @@ namespace llsct {
       OutMI.setFlags(flags | f);
     };
     
-    // Check if the MI has a memory operand flagged as SSBD.
-    for (const MachineMemOperand *MMO : MI->memoperands()) {
-      if ((MMO->getFlags() & X86::AcSsbd)) {
-	addFlag(X86::IP_HAS_SSBD);
-      }
-    }
-
-    // Check if we should mark it INDADDR.
-    if (EnableLLSCTIndAddr && MI->mayLoadOrStore()) {
-      switch (MI->getNumMemOperands()) {
-      case 0: {
-	if (X86::getMemRefBeginIdx(*MI) >= 0) {
-	  if (verbose) 
-	    WithColor::warning() << __FILE__ << ":" << __LINE__ << ": instruction missing memory operand: " << *MI;
-	  break;
-	}
-	if (!MI->hasRegisterImplicitUseOperand(X86::RSP)) {
-	  if (verbose)
-	    WithColor::warning() << __FILE__ << ":" << __LINE__ << ": skipping instruction: " << *MI;
-	  break;
-	}
-	break;
-      }
-
-      case 1: {
-	const MachineMemOperand *MMO = MI->memoperands()[0];
-	const Value *Ptr = MMO->getValue();
-	if (!Ptr)
-	  break;
-	int64_t AllocOffset;
-	const DataLayout DL(MI->getParent()->getParent()->getFunction().getParent());
-	const Value *BasePtr = GetPointerBaseWithConstantOffset(Ptr, AllocOffset, DL);
-	assert(BasePtr);
-	if (!isa<AllocaInst>(BasePtr))
-	  break;
-	addFlag(X86::IP_HAS_INDADDR);
-	break;
-      }
-      
-      default:
-	if (verbose)
-	  WithColor::warning() << __FILE__ << ":" << __LINE__ << ": not handling instruction with >1 memory operand: " << *MI;
-	break;
-      }
-    }
-
     // Declassify flag
-    if (MI->getFlag(MachineInstr::LLSCTDeclassify)) {
-      addFlag(X86::IP_LLSCT_DECLASSIFY);
+    bool privty = MI->getFlag(MachineInstr::TPEPrivM);
+    bool pubty = MI->getFlag(MachineInstr::TPEPubM);
+    assert(!(privty && pubty));
+    if (MI->mayLoadOrStore()) {
+      if (!(privty || pubty))  {
+	switch (tpe::PrivacyPolicyOpt) {
+	case tpe::ct:
+	  privty = true;
+	  break;
+	case tpe::sandbox:
+	  pubty = true;
+	  break;
+	default:
+	  llvm_unreachable("Unsupported threat model");
+	}
+      }
+      if (privty)
+	addFlag(X86::IP_TPE_PRIVM);
+    } else {
+      assert(!(privty || pubty));
     }
   }
   

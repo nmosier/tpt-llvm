@@ -13,7 +13,7 @@ namespace llvm::X86 {
 
   void runDeclassifyAnnotationPass(MachineFunction& MF);  
   void runDeclassifyCFIPass(MachineFunction& MF);
-  void runSavePublicCSRsPass(MachineFunction& MF);
+  // void runSavePublicCSRsPass(MachineFunction& MF);
   
   class GPRBitMask {
   public:
@@ -31,6 +31,11 @@ namespace llvm::X86 {
 
     static auto gprs() {
       return llvm::make_first_range(reg2idx);
+    }
+
+    void addAll() {
+      for (MCRegister gpr : gprs())
+	add(gpr);
     }
     
   private:

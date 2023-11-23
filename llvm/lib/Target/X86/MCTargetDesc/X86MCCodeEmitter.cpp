@@ -1267,6 +1267,10 @@ bool X86MCCodeEmitter::emitOpcodePrefix(int MemOperand, const MCInst &MI,
   const MCInstrDesc &Desc = MCII.get(MI.getOpcode());
   uint64_t TSFlags = Desc.TSFlags;
 
+  if (MI.getFlags() & X86::IP_TPE_PRIVM) {
+    emitByte(0x36, OS);
+  }
+  
   // Emit the operand size opcode prefix as needed.
   if ((TSFlags & X86II::OpSizeMask) ==
       (STI.hasFeature(X86::Is16Bit) ? X86II::OpSize32 : X86II::OpSize16))
@@ -1291,16 +1295,6 @@ bool X86MCCodeEmitter::emitOpcodePrefix(int MemOperand, const MCInst &MI,
   }
   // LLSCT FIXME: disabled this just for testing
 #endif
-
-  // Emit the INDADDR opcode prefix.
-#if 0
-  if (MI.getFlags() & X86::IP_HAS_INDADDR) {
-    emitByte(0x36, OS);
-  }
-#endif
-  if (MI.getFlags() & X86::IP_LLSCT_DECLASSIFY) {
-    emitByte(0x36, OS);
-  }
 
   switch (TSFlags & X86II::OpPrefixMask) {
   case X86II::PD: // 66

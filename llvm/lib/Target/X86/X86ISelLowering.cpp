@@ -66,6 +66,8 @@
 #include <bitset>
 #include <cctype>
 #include <numeric>
+#include "llvm/TPE.h"
+#include "X86LLSCT.h"
 using namespace llvm;
 
 #define DEBUG_TYPE "x86-isel"
@@ -4887,6 +4889,11 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
             : EHPersonality::Unknown;
     if (isFuncletEHPersonality(Pers))
       Mask = RegInfo->getNoPreservedMask();
+  }
+
+  // LLSCT/TPE: EXPERIMENTAL
+  if (llsct::NoCalleeSavedRegs()) {
+    Mask = RegInfo->getNoPreservedMask();
   }
 
   // Define a new register mask from the existing mask.
