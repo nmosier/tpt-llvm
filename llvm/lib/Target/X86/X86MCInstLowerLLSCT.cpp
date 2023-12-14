@@ -40,6 +40,7 @@ namespace tpe {
 	switch (tpe::PrivacyPolicyOpt) {
 	case tpe::ct:
 	  privty = true;
+	  // errs() << "warning: converting untyped access to private: " << *MI;
 	  break;
 	case tpe::sandbox:
 	  pubty = true;
@@ -48,8 +49,12 @@ namespace tpe {
 	  llvm_unreachable("Unsupported threat model");
 	}
       }
-      if (privty)
+      if (privty) {
 	addFlag(X86::IP_TPE_PRIVM);
+	// errs() << "[lower] privately-typed access: " << *MI;
+      } else {
+	// errs() << "[lower] publicly-typed access: " << *MI;
+      }
     } else {
       assert(!(privty || pubty));
     }

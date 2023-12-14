@@ -45,6 +45,11 @@ namespace tpe {
 	       clEnumVal(ctdecl,  "constant-time privacy policy (with declassification)")),
     llvm::cl::init(PrivacyPolicyNone),
   };
+  llvm::cl::opt<bool> EnableArgRetDecl {
+    "tpe-args",
+    llvm::cl::desc("[TPE] Enable argument and return value implicit declassification"),
+    llvm::cl::init(true),
+  };
   
   using namespace llvm::X86;
   bool allowDeclassify() {
@@ -226,6 +231,21 @@ namespace llvm::X86 {
     bool pointeeHasPublicType(const llvm::Value *Ptr) {
       std::set<const llvm::Value *> seen;
       return pointeeHasPublicType(Ptr, seen);
+    }
+
+    bool pointeeHasPublicType(const MachineMemOperand *MMO, const MachineFrameInfo *MFI) {
+      if (MMO->getMemoryType().isPointer()) {
+	return true;
+      } else if (const llvm::Value *Val = MMO->getValue()) {
+	if (const GlobalVariable *GV = dyn_cast<GlobalVariable>(Val))
+	  if (GV->isConstant())
+	    return true;
+	return pointeeHasPublicType(Val);
+      } else if (const PseudoSourceValue *PSV = MMO->getPseudoValue()) {
+	return PSV->isConstant(MFI);
+      } else {
+	return false;
+      }
     }
 
     void Value::removeClobberedRegisters(const MachineInstr& MI) {
@@ -621,10 +641,10 @@ namespace llvm::X86 {
     }
 
     // Add explicitly declassified arguments.
-    {
+    if (EnableArgRetDecl) {
       const auto argmap = util::irargs_to_mcargs(MF);
       for (const Argument& irarg : F.args()) {
-	if (irarg.hasAttribute(Attribute::Declassified)) {
+	if (irarg.hasAttribute(Attribute::Declassified) || irarg.getType()->isPointerTy()) {
 	  const auto argit = argmap.find(&irarg);
 	  if (argit != argmap.end()) {
 	    const auto phys_reg = argit->second;
@@ -635,45 +655,46 @@ namespace llvm::X86 {
 	  }
 	}
       }
-    }
 
-    // Add explicitly declassified return values.
-    if (F.hasRetAttribute(Attribute::Declassified)) {
-      for (MachineBasicBlock& MBB : MF) {
-	for (MachineInstr& MI : MBB) {
-	  if (MI.isReturn() && !MI.isCall()) {
-	    Map[&MI].pre.setAllInstrInputsPublic(MI);
-	  }
-	}
+      // Add explicitly declassified return values.
+      if (F.hasRetAttribute(Attribute::Declassified) || F.getReturnType()->isPointerTy()) {
+        for (MachineBasicBlock& MBB : MF) {
+          for (MachineInstr& MI : MBB) {
+            if (MI.isReturn() && !MI.isCall()) {
+              Map[&MI].pre.setAllInstrInputsPublic(MI);
+            }
+          }
+        }
       }
-    }
 
-    // Add explicitly declassified call arguments and return values.
-    for (MachineBasicBlock& MBB : MF) {
-      for (MachineInstr& MI : MBB) {
-	if (MI.isCall()) {
-	  const auto call_sites_info_it = MF.getCallSitesInfo().find(&MI);
-	  if (call_sites_info_it != MF.getCallSitesInfo().end()) {
-	    const auto call_sites_info = call_sites_info_it->second;
-	    if (const CallBase *I = call_sites_info.Call) {
-	      for (const auto& ArgReg : call_sites_info.ArgRegPairs) {
-		if (I->paramHasAttr(ArgReg.ArgNo, Attribute::Declassified)) {
-		  Map[&MI].pre.addPubReg(ArgReg.Reg);
-		}
-	      }
+      // Add explicitly declassified call arguments and return values.
+      for (MachineBasicBlock& MBB : MF) {
+        for (MachineInstr& MI : MBB) {
+          if (MI.isCall()) {
+            const auto call_sites_info_it = MF.getCallSitesInfo().find(&MI);
+            if (call_sites_info_it != MF.getCallSitesInfo().end()) {
+              const auto call_sites_info = call_sites_info_it->second;
+              if (const CallBase *I = call_sites_info.Call) {
+                for (const auto& ArgReg : call_sites_info.ArgRegPairs) {
+                  if (I->paramHasAttr(ArgReg.ArgNo, Attribute::Declassified) ||
+                      I->getArgOperand(ArgReg.ArgNo)->getType()->isPointerTy()) {
+                    Map[&MI].pre.addPubReg(ArgReg.Reg);
+                  }
+                }
 	    
-	      if (I->hasRetAttr(Attribute::Declassified)) {
-		for (const MachineOperand& MO : MI.operands()) {
-		  if (MO.isReg() && MO.isDef() && MO.isImplicit()) {
-		    Map[&MI].post.addPubReg(MO.getReg());
-		  }
-		}
-	      }
-	    } else {
-	      errs() << F.getName() << ": failed to get IR call for: " << MI;
-	    }
-	  }
-	}
+                if (I->hasRetAttr(Attribute::Declassified) || I->getType()->isPointerTy()) {
+                  for (const MachineOperand& MO : MI.operands()) {
+                    if (MO.isReg() && MO.isDef() && MO.isImplicit()) {
+                      Map[&MI].post.addPubReg(MO.getReg());
+                    }
+                  }
+                }
+              } else {
+                errs() << F.getName() << ": failed to get IR call for: " << MI;
+              }
+            }
+          }
+        }
       }
     }
     
@@ -683,7 +704,17 @@ namespace llvm::X86 {
       for (MachineInstr& MI : MBB) {
 	const bool should_declassify =
 	  any_of(MI.memoperands(), [] (const MachineMemOperand *MemOp) -> bool {
-	    // Is the memory operand's data type implicitly public?
+	    const llvm::Value *Ptr = MemOp->getValue();
+	    if (!Ptr)
+              return false;
+	    if (const Instruction *I = dyn_cast<Instruction>(Ptr);
+		I && I->getMetadata("llsct.declassify.ptr"))
+	      return true;
+	    if (const GlobalObject *G = dyn_cast<GlobalObject>(Ptr);
+		G && G->getMetadata("llsct.declassify.ptr"))
+	      return true;
+
+#if 0 
 	    auto *II = dyn_cast_or_null<IntrinsicInst>(MemOp->getValue());
 	    if (!II)
 	      return false;
@@ -700,6 +731,9 @@ namespace llvm::X86 {
 	    if (ConstArr->getAsCString() != "llsct.declassify.mem")
 	      return false;
 	    return true;
+#else
+	    return false;
+#endif
 	  });
 
 	if (!should_declassify)
@@ -778,14 +812,12 @@ namespace llvm::X86 {
 
 	// If a memory access accesses a pointer value, then declassify *all* operands.
 	for (MachineMemOperand *MMO : MI.memoperands()) {
-	  if (const llvm::Value *Ptr = MMO->getValue()) {
-	    if (pointeeHasPublicType(Ptr)) {
-	      for (const MachineOperand& MO : MI.operands()) {
-		if (MO.isReg()) {
-		  Val.pre.addPubReg(MO.getReg());
-		  if (!MI.isCall())
-		    Val.post.addPubReg(MO.getReg());
-		}
+	  if (pointeeHasPublicType(MMO, &MF.getFrameInfo())) {
+	    for (const MachineOperand& MO : MI.operands()) {
+	      if (MO.isReg()) {
+		Val.pre.addPubReg(MO.getReg());
+		if (!MI.isCall())
+		  Val.post.addPubReg(MO.getReg());
 	      }
 	    }
 	  }
@@ -843,6 +875,7 @@ namespace llvm::X86 {
 	}
       }
 
+#if 0
       // Global consistency of frame accesses
       std::set<FrameLocation> PubFrameLocs;
       for (MachineBasicBlock& MBB : MF) {
@@ -859,6 +892,7 @@ namespace llvm::X86 {
 	    changed |= Map[&MI].pre.setAllInstrInputsPublic(MI);
 	}
       }
+#endif
 
       // Meet (forward and backward)
       for (MachineBasicBlock& MBB : MF) {
@@ -926,6 +960,8 @@ namespace llvm::X86 {
     }
 #endif
     ValidateDeclassifyMap(MF, Map, "post-df");
+
+    // dump_taint(llvm::errs());
     
     return Map;
   }
@@ -968,8 +1004,10 @@ namespace llvm::X86 {
 
 	if ((MI.mayLoad() && AnyOutputPublic) || (MI.mayStore() && AllInputsPublic)) {
 	  MI.setFlag(MachineInstr::TPEPubM);
+	  // errs() << "[annotate] publicly-typed access: " << MI;
 	} else {
 	  MI.setFlag(MachineInstr::TPEPrivM);
+	  // errs() << "[annotate] privately-typed access: " << MI;
 	}
       }
     }
@@ -1105,8 +1143,7 @@ namespace llvm::X86 {
 	  if (MI.isCall() || MI.isReturn()) {
 	    return true;
 	  } else if (MI.getNextNode()) {
-	    return declassifies(get_label(Map[&MI].post), get_label(Map[MI.getNextNode()].pre))
-	      || deviates(MI);
+	    return declassifies(get_label(Map[&MI].post), get_label(Map[MI.getNextNode()].pre));
 	  } else {
 	    return llvm::any_of(MBB.successors(), [&] (MachineBasicBlock *Succ) -> bool {
 	      if (Succ->empty()) {
@@ -1126,8 +1163,7 @@ namespace llvm::X86 {
 	  } else if (MI.getPrevNode() && MI.getPrevNode()->isCall() && !MI.getPrevNode()->isReturn()) {
 	    return true;
 	  } else if (MI.getPrevNode()) {
-	    return declassifies(get_label(Map[MI.getPrevNode()].post), get_label(Map[&MI].pre))
-	      || deviates(*MI.getPrevNode());
+	    return declassifies(get_label(Map[MI.getPrevNode()].post), get_label(Map[&MI].pre));
 	  } else {
 	    return llvm::any_of(MBB.predecessors(), [&] (MachineBasicBlock *Pred) -> bool {
 	      if (Pred->empty()) {
@@ -1144,6 +1180,33 @@ namespace llvm::X86 {
 	    assert(!Prev->isTerminator());
 	  }
 	}
+
+
+
+	// Destination CFI labels.
+	if (guard_dst) {
+
+	  GPRBitMask label;
+
+	  const MachineInstr *Prev = MI.getPrevNode();
+
+	  if (Prev && Prev->isCall()) {
+	    for (MCRegister gpr : FilterLiveRegsBefore(MI, FilterRegMask(Prev, label.gprs())))
+	      if (value.hasPubReg(gpr))
+		label.add(gpr);
+	  } else {
+	    for (MCRegister gpr : label.gprs())
+	      if (value.hasPubReg(gpr))
+		label.add(gpr);
+	  }
+
+	  if (PrivacyPolicyOpt == tpe::sandbox)
+	    label.addAll();
+	  
+	  BuildCFILabel_Dst(MBB, MI.getIterator(), label.getValue());
+	}
+
+
 
 	// Source CFI labels.
 	if (guard_src) {
@@ -1162,23 +1225,6 @@ namespace llvm::X86 {
 	  BuildCFILabel_Src(MBB, MI.getIterator(), label.getValue());
 	}
 
-
-	// Destination CFI labels.
-	if (guard_dst) {
-
-	  GPRBitMask label;
-
-	  const MachineInstr *Prev = MI.getPrevNode();
-
-	  for (MCRegister gpr : FilterLiveRegsBefore(MI, FilterRegMask(Prev, label.gprs())))
-	    if (value.hasPubReg(gpr))
-	      label.add(gpr);
-
-	  if (PrivacyPolicyOpt == tpe::sandbox)
-	    label.addAll();
-	  
-	  BuildCFILabel_Dst(MBB, MI.getIterator(), label.getValue());
-	}
 	
       }
     }

@@ -552,16 +552,14 @@ void X86PassConfig::addPostRegAlloc() {
   // analyses needed by the LVIHardening pass when compiling at -O0.
   if (getOptLevel() != CodeGenOpt::None)
     addPass(createX86LoadValueInjectionLoadHardeningPass());
-  addPass(createX86LLSCTPass());
-  addPass(createX86ProtectPass());
-  addPass(createX86ReturnHardeningPass());
+  // addPass(createX86LLSCTPass());
 }
 
 void X86PassConfig::addPreSched2() {
   addPass(createX86ExpandPseudoPass());
   addPass(createX86KCFIPass());
   // addPass(createX86LLSCTPass());
-  addPass(createX86TaintCFIPass());
+  // addPass(createX86TaintCFIPass());
 }
 
 void X86PassConfig::addPreEmitPass() {
@@ -583,6 +581,8 @@ void X86PassConfig::addPreEmitPass() {
   addPass(createX86DiscriminateMemOpsPass());
   addPass(createX86InsertPrefetchPass());
   addPass(createX86InsertX87waitPass());
+  addPass(createX86LLSCTPass());
+  addPass(createX86TaintCFIPass());
 }
 
 void X86PassConfig::addPreEmitPass2() {
