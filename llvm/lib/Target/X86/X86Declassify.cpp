@@ -490,13 +490,7 @@ namespace llvm::X86 {
 		     uint32_t CFILabel_, MCRegister BaseReg) {
     if (!tpe::EnablePrivRegs)
       return;
-    
     int64_t CFILabel = CFILabel_;
-#if 0
-    // HACK: Force labels < 256 to use 1-byte encoding.
-    if (CFILabel < 256)
-      CFILabel = (int8_t) CFILabel;
-#endif
     const auto *TII = MBB.getParent()->getSubtarget<X86Subtarget>().getInstrInfo();
     BuildMI(MBB, MBBI, DebugLoc(), TII->get(X86::CFILBL))
       .addReg(BaseReg)
@@ -1305,9 +1299,11 @@ namespace llvm::X86 {
 	      if (value.hasPubReg(gpr))
 		label.add(gpr);
 	  } else {
-	    for (MCRegister gpr : label.gprs())
-	      if (value.hasPubReg(gpr))
+	    for (MCRegister gpr : label.gprs()) {
+	      if (value.hasPubReg(gpr)) {
 		label.add(gpr);
+              }
+            }
 	  }
 
 	  if (PrivacyPolicyOpt == tpe::sandbox)
@@ -1325,13 +1321,15 @@ namespace llvm::X86 {
 	  GPRBitMask label;
 
 	  // Add to the mask any remaining GPRs that are public.
-	  for (MCRegister gpr : FilterRegMask(&MI, label.gprs()))
-	    if (value.hasPubReg(gpr))
+	  for (MCRegister gpr : FilterRegMask(&MI, label.gprs())) {
+	    if (value.hasPubReg(gpr)) {
 	      label.add(gpr);
+            }
+          }
 
 	  if (PrivacyPolicyOpt == tpe::sandbox)
 	    label.addAll();
-	  
+
 	  BuildCFILabel_Src(MBB, MI.getIterator(), label.getValue());
 	}
 

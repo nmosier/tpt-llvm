@@ -17,10 +17,10 @@ namespace llvm::X86 {
   
   class GPRBitMask {
   public:
-    uint16_t getValue() const {
+    uint64_t getValue() const {
       const auto value = bv.to_ulong();
-      assert(value <= std::numeric_limits<uint16_t>::max());
-      return static_cast<uint16_t>(value);
+      assert(value <= std::numeric_limits<uint32_t>::max());
+      return static_cast<uint32_t>(value);
     }
 
     void add(MCRegister reg) {
@@ -39,7 +39,7 @@ namespace llvm::X86 {
     }
     
   private:
-    std::bitset<16> bv;
+    std::bitset<32> bv;
 
     static inline const std::map<MCRegister, size_t> reg2idx = {
       {X86::RAX,  0},
@@ -59,6 +59,24 @@ namespace llvm::X86 {
       {X86::R13, 13},
       {X86::R14, 14},
       {X86::R15, 15},
+
+      // XMMs
+      {X86::XMM0, 16},
+      {X86::XMM1, 17},
+      {X86::XMM2, 18},
+      {X86::XMM3, 19},
+      {X86::XMM4, 20},
+      {X86::XMM5, 21},
+      {X86::XMM6, 22},
+      {X86::XMM7, 23},
+      {X86::XMM8, 24},
+      {X86::XMM9, 25},
+      {X86::XMM10, 26},
+      {X86::XMM11, 27},
+      {X86::XMM12, 28},
+      {X86::XMM13, 29},
+      {X86::XMM14, 30},
+      {X86::XMM15, 31},
     };
   };
   
