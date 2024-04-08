@@ -101,7 +101,9 @@ namespace llvm::X86 {
       static Register canonicalizeRegister(Register Reg) {
 	if (Reg == X86::EFLAGS)
 	  return Reg;
-	return getX86SubSuperRegisterOrZero(Reg, 64);
+	if (Register Reg64 = getX86SubSuperRegisterOrZero(Reg, 64))
+          return Reg64;
+        return Reg;
       }
 
     private:
@@ -222,7 +224,7 @@ namespace llvm::X86 {
       } else if (const FreezeInst *Freeze = dyn_cast<FreezeInst>(Ptr)) {
 	return rec(Freeze->getOperand(0));
       } else {
-	Ptr->dump();
+        // Ptr->dump();
 	report_fatal_error("Unhandled pointer");
       }
       return Ty->isPointerTy();
@@ -239,10 +241,14 @@ namespace llvm::X86 {
       } else if (const llvm::Value *Val = MMO->getValue()) {
 	if (const GlobalVariable *GV = dyn_cast<GlobalVariable>(Val))
 	  if (GV->isConstant())
-	    return true;
+	    return false;
 	return pointeeHasPublicType(Val);
       } else if (const PseudoSourceValue *PSV = MMO->getPseudoValue()) {
+#if 0
 	return PSV->isConstant(MFI);
+#else
+        return false;
+#endif
       } else {
 	return false;
       }
@@ -624,6 +630,44 @@ namespace llvm::X86 {
 
     std::map<MachineInstr *, Node> Map, Bak;
 
+
+    // DEBUG ONLY
+    [[maybe_unused]] const auto dump_taint = [&] (llvm::raw_ostream& os) {
+      os << "TAINT FOR FUNCTION " << MF.getFunction().getName() << "\n";
+      for (auto& MBB : MF) {
+
+	os << "LIVEINS:";
+	for (const auto& p : MBB.liveins()) {
+	  os << " " << MF.getSubtarget().getRegisterInfo()->getRegAsmName(p.PhysReg);
+	}
+	os << "\n";
+	
+	for (auto& MI : MBB) {
+	  const auto *TRI = MF.getSubtarget().getRegisterInfo();
+	  const auto& node = Map[&MI];
+	  os << "\t";
+	  node.pre.print(os, TRI);
+
+	  os << "\n";
+	  os << MI;
+	  os << "\t";
+	  node.post.print(os, TRI);
+	  os << "\n";
+	}
+      }
+    };
+
+    [[maybe_unused]] const auto dump_taint_to_file = [&] (const auto &name) {
+      if (MF.getName() != "LBM_performStreamCollideBGK")
+        return;
+      std::error_code EC;
+      llvm::raw_fd_ostream os(name, EC);
+      dump_taint(os);
+    };
+
+    dump_taint_to_file("taint.init.out");
+
+    
     // Add the inputs/outputs of explicitly declassified load/stores via the MIFlag LLSCTDeclassify.
     for (MachineBasicBlock& MBB : MF) {
       for (MachineInstr& MI : MBB) {
@@ -639,6 +683,8 @@ namespace llvm::X86 {
 	}
       }
     }
+
+    dump_taint_to_file("taint.explicit.mem.out");
 
     // Add explicitly declassified arguments.
     if (EnableArgRetDecl) {
@@ -697,6 +743,8 @@ namespace llvm::X86 {
         }
       }
     }
+
+    dump_taint_to_file("taint.explicit.args.out");
     
     // declassify the value operands / results of all memory accesses that were
     // flagged as declassified in our IR pass.
@@ -760,6 +808,8 @@ namespace llvm::X86 {
 	}
       }
     }
+
+    dump_taint_to_file("taint.ir.out");
       
     // All sensitive operands of transmitters are assumed to be public.
     // For now, we will just consider (a) the address operands of memory accesses,
@@ -809,52 +859,82 @@ namespace llvm::X86 {
 	  if (IndexOp.isReg())
 	    Val.pre.addPubReg(IndexOp.getReg());
 	}
+      }
+    }
+
+    dump_taint_to_file("taint.xmit.out");
+    
+    for (MachineBasicBlock &MBB : MF) {
+      for (MachineInstr &MI : MBB) {
+        auto &Val = Map[&MI];
 
 	// If a memory access accesses a pointer value, then declassify *all* operands.
 	for (MachineMemOperand *MMO : MI.memoperands()) {
-	  if (pointeeHasPublicType(MMO, &MF.getFrameInfo())) {
-	    for (const MachineOperand& MO : MI.operands()) {
-	      if (MO.isReg()) {
-		Val.pre.addPubReg(MO.getReg());
-		if (!MI.isCall())
-		  Val.post.addPubReg(MO.getReg());
-	      }
-	    }
-	  }
+          if (!pointeeHasPublicType(MMO, &MF.getFrameInfo()))
+            continue;
+          for (const MachineOperand &MO : MI.operands()) {
+            if (!MO.isReg())
+              continue;
+            if (MO.isUse())
+              Val.pre.addPubReg(MO.getReg());
+            if (MO.isDef() && !MI.isCall())
+              Val.post.addPubReg(MO.getReg());
+          }
 	}
       }
     }
 
+    dump_taint_to_file("taint.pubty.out");
 
-    // DEBUG ONLY
-    [[maybe_unused]] const auto dump_taint = [&] (llvm::raw_ostream& os) {
-      os << "TAINT FOR FUNCTION " << MF.getFunction().getName() << "\n";
-      for (auto& MBB : MF) {
+    // Handle loads from constant memory.
+    for (MachineBasicBlock &MBB : MF) {
+      for (MachineInstr &MI : MBB) {
+        if (!MI.mayLoad())
+          continue;
 
-	os << "LIVEINS:";
-	for (const auto& p : MBB.liveins()) {
-	  os << " " << MF.getSubtarget().getRegisterInfo()->getRegAsmName(p.PhysReg);
-	}
-	os << "\n";
-	
-	for (auto& MI : MBB) {
-	  const auto *TRI = MF.getSubtarget().getRegisterInfo();
-	  const auto& node = Map[&MI];
-	  os << "\t";
-	  node.pre.print(os, TRI);
+        const bool loads_constant_mem = llvm::all_of(MI.memoperands(), [&] (const MachineMemOperand *MMO) -> bool {
+          if (const llvm::Value *V = MMO->getValue()) {
+            const GlobalVariable *GV = dyn_cast<GlobalVariable>(V);
+            return GV && GV->isConstant();
+          } else if (const PseudoSourceValue *PSV = MMO->getPseudoValue()) {
+            return PSV->isConstant(&MF.getFrameInfo());
+          } else {
+            return false;
+          }          
+        });
+        if (!loads_constant_mem)
+          continue;
+        
+        const int MemBegin = getMemRefBeginIdx(MI);
+        const int MemEnd = MemBegin + X86::AddrNumOperands;
 
-	  os << "\n";
-	  os << MI;
-	  os << "\t";
-	  node.post.print(os, TRI);
-	  os << "\n";
-	}
+        // Only continue if there are no non-memory-operand uses.
+        bool has_non_mem_uses = false;
+        for (int i = 0; i < MI.getNumOperands(); ++i) {
+          if (MemBegin <= i && i < MemEnd)
+            continue;
+          const MachineOperand &MO = MI.getOperand(i);
+          if (MO.isReg() && MO.isUse())
+            has_non_mem_uses = true;
+        }
+        if (has_non_mem_uses)
+          continue;
+
+        // Finally, mark all def'ed registers as public.
+        auto &Val = Map[&MI];
+        for (const MachineOperand &MO : MI.defs())
+          if (MO.isReg() && MO.isDef())
+            Val.post.addPubReg(MO.getReg());
       }
-    };
+    }
+
 
     ValidateDeclassifyMap(MF, Map, "pre-df");
 
+    dump_taint_to_file("taint.df.pre.out");
+
     bool changed;
+    int num_iters = 0;
     do {
       changed = false;
 
@@ -942,19 +1022,23 @@ namespace llvm::X86 {
 #if 0
       ValidateDeclassifyMap(MF, Map, "pre-df");
 #endif
+
+      if (MF.getFunction().getName() == "LBM_performStreamCollideBGK") {
+        std::string name;
+        llvm::raw_string_ostream name_os(name);
+        name_os << "taint" << num_iters++ << ".out";
+        dump_taint_to_file(name);
+      }
       
     } while (changed);
 
 
-#if 0
-    if (MF.getFunction().getName() == "walk_tree_1") {
+#if 1
+    if (MF.getFunction().getName() == "LBM_performStreamCollideBGK") {
+      dump_taint_to_file("taint.df.post.out");
       std::error_code EC;
-      llvm::raw_fd_ostream f("taint.out", EC);
-      dump_taint(f);
-
       llvm::raw_fd_ostream f2("ir.out", EC);
       MF.getFunction().print(f2);
-
       llvm::raw_fd_ostream f3("mf.out", EC);
       MF.print(f3);
     }
@@ -969,6 +1053,32 @@ namespace llvm::X86 {
   void runDeclassifyAnnotationPass(MachineFunction& MF) {
 
     auto Map = runTaintAnalysis(MF);
+
+    [[maybe_unused]] const auto dump_taint = [&] (llvm::raw_ostream& os) {
+      os << "TAINT FOR FUNCTION " << MF.getFunction().getName() << "\n";
+      for (auto& MBB : MF) {
+
+	os << "LIVEINS:";
+	for (const auto& p : MBB.liveins()) {
+	  os << " " << MF.getSubtarget().getRegisterInfo()->getRegAsmName(p.PhysReg);
+	}
+	os << "\n";
+	
+	for (auto& MI : MBB) {
+	  const auto *TRI = MF.getSubtarget().getRegisterInfo();
+	  const auto& node = Map[&MI];
+	  os << "\t";
+	  node.pre.print(os, TRI);
+
+	  os << "\n";
+	  os << MI;
+	  os << "\t";
+	  node.post.print(os, TRI);
+	  os << "\n";
+	}
+      }
+    };
+    
 
     // Mark loads/stores as declassified iff their value operand is public.
     for (MachineBasicBlock& MBB : MF) {
@@ -1013,7 +1123,7 @@ namespace llvm::X86 {
     }
 
 #if 0
-    dump_taint();
+    dump_taint(llvm::errs());
 #endif
 
   }
