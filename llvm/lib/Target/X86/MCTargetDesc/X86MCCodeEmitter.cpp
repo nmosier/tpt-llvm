@@ -600,8 +600,7 @@ bool X86MCCodeEmitter::emitPrefixImpl(unsigned &CurOp, const MCInst &MI,
   // Determine where the memory operand starts, if present.
   int MemoryOperand = X86II::getMemoryOperandNo(TSFlags);
   // Emit segment override opcode prefix as needed.
-  bool hasSegmentOverride = (MemoryOperand != -1);
-  if (hasSegmentOverride) {
+  if (MemoryOperand != -1) {
     MemoryOperand += CurOp;
     emitSegmentOverridePrefix(MemoryOperand + X86::AddrSegmentReg, MI, OS);
   }
@@ -1264,10 +1263,14 @@ void X86MCCodeEmitter::emitSegmentOverridePrefix(unsigned SegOperand,
 /// \returns true if REX prefix is used, otherwise returns false.
 bool X86MCCodeEmitter::emitOpcodePrefix(int MemOperand, const MCInst &MI,
                                         const MCSubtargetInfo &STI,
-                                        raw_ostream &OS) const {  
+                                        raw_ostream &OS) const {
   const MCInstrDesc &Desc = MCII.get(MI.getOpcode());
   uint64_t TSFlags = Desc.TSFlags;
 
+  if (MI.getFlags() & X86::IP_TPE_PRIVM) {
+    emitByte(0x36, OS);
+  }
+  
   // Emit the operand size opcode prefix as needed.
   if ((TSFlags & X86II::OpSizeMask) ==
       (STI.hasFeature(X86::Is16Bit) ? X86II::OpSize32 : X86II::OpSize16))
@@ -1292,17 +1295,6 @@ bool X86MCCodeEmitter::emitOpcodePrefix(int MemOperand, const MCInst &MI,
   }
   // LLSCT FIXME: disabled this just for testing
 #endif
-
-  {
-    // Determine where the memory operand starts, if present.
-    int MemoryOperand = X86II::getMemoryOperandNo(TSFlags);
-    // Emit segment override opcode prefix as needed.
-    bool hasSegmentOverride = (MemoryOperand != -1);
-  
-    if ((MI.getFlags() & X86::IP_TPE_PRIVM) && !hasSegmentOverride)
-      emitByte(0x36, OS);
-  }
-  
 
   switch (TSFlags & X86II::OpPrefixMask) {
   case X86II::PD: // 66
