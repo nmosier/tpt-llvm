@@ -73,6 +73,13 @@ public:
   const BasicBlockSet &getBlockPredecessors(MachineBasicBlock *MBB);
   const BasicBlockSet &getBlockSuccessors(MachineBasicBlock *MBB);
 
+  [[nodiscard]] static bool isPublicInstr(const MachineInstr& MI) { return MI.getFlag(MachineInstr::TPEPubM); }
+  [[nodiscard]] static bool setPublicInstr(MachineInstr &MI) {
+    const bool Changed = !isPublicInstr(MI);
+    MI.setFlag(MachineInstr::TPEPubM);
+    return Changed;
+  }
+
 private:
 
   template <typename T>
@@ -98,6 +105,8 @@ private:
 
   void dumpResults(raw_ostream &os, MachineFunction &MF);
   void validate(MachineFunction &MF);
+
+  void transferInstrForward(MachineInstr &MI, PrivacyMask &Privacy);
 };
 
 namespace X86 {

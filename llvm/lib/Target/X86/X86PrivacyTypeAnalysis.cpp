@@ -18,6 +18,12 @@ using X86::PrivacyNode;
 using X86::PrivatelyTyped;
 using X86::PubliclyTyped;
 
+// TODO LIST:
+// [ ] Don't print out always-public registers in list.
+// [ ] Print out both outs and ins back-to-back if they differ.
+// [ ] Label instr-ins, etc.
+// [ ] Option to colorize printouts. Color newly public instructions green; color now missing instructions red.
+
 char X86PrivacyTypeAnalysis::ID = 0;
 
 static llvm::cl::opt<bool> DumpResults {
@@ -27,6 +33,7 @@ static llvm::cl::opt<bool> DumpResults {
   cl::Hidden,
 };
 
+// PTEX-TODO: Rename to DumpDelta.
 static llvm::cl::opt<bool> DumpIncremental {
   PASS_KEY "-dump-incr",
   cl::desc("Dump incremental privacy types"),
@@ -35,7 +42,7 @@ static llvm::cl::opt<bool> DumpIncremental {
 };
 
 
-static std::array<Register, 3> AlwaysPublicRegisters = {X86::RSP, X86::RIP, X86::SSP};
+static std::array<Register, 4> AlwaysPublicRegisters = {X86::NoRegister, X86::RSP, X86::RIP, X86::SSP};
 
 bool llvm::X86::registerIsAlwaysPublic(Register Reg) {
   return llvm::is_contained(AlwaysPublicRegisters, Reg);
@@ -124,7 +131,6 @@ int X86::getMemRefBeginIdx(const MachineInstr& MI) {
 }
 
 Register PrivacyMask::canonicalizeRegister(Register Reg) {
-  assert(Reg != X86::NoRegister);
   if (Reg == X86::EFLAGS)
     return Reg;
   if (Register Reg64 = getX86SubSuperRegisterOrZero(Reg, 64))
@@ -193,6 +199,13 @@ void PrivacyMask::setRegMask(const uint32_t *RegMask, PrivacyType Ty, bool inver
   }
 }
 
+[[nodiscard]] static bool isPublicInstr(const MachineInstr& MI) { return MI.getFlag(MachineInstr::TPEPubM); }
+[[nodiscard]] static bool setPublicInstr(MachineInstr &MI) {
+  const bool Changed = !isPublicInstr(MI);
+  MI.setFlag(MachineInstr::TPEPubM);
+  return Changed;
+}
+
 
 void X86PrivacyTypeAnalysis::getAnalysisUsage(AnalysisUsage &AU) const {
   MachineFunctionPass::getAnalysisUsage(AU);
@@ -245,9 +258,7 @@ const X86PrivacyTypeAnalysis::BasicBlockSet &X86PrivacyTypeAnalysis::getBlockSuc
 }
 
 static bool allInputsPublic(const MachineInstr &MI, const PrivacyMask &Privacy) {
-  // PTEX-TODO: Can actually ignore loads of pointer data or constant data.
-  // PTEX-TODO: May want to check load privacy flag.
-  if (MI.mayLoad())
+  if (MI.mayLoad() && !isPublicInstr(MI))
     return false;
 
   for (const MachineOperand &MO : MI.operands())
@@ -258,8 +269,7 @@ static bool allInputsPublic(const MachineInstr &MI, const PrivacyMask &Privacy) 
 }
 
 static bool allOutputsPublic(const MachineInstr &MI, const PrivacyMask &Privacy) {
-  // PTEX-TODO: Might want to consider store flag here.
-  if (MI.mayStore())
+  if (MI.mayStore() && !isPublicInstr(MI))
     return false;
 
   for (const MachineOperand &MO : MI.operands())
@@ -384,6 +394,7 @@ bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
+
   // PTEX-NOTE: We don't need to mark callee-saved registers as publicly-typed,
   // since the saves will be inserted later on. 
 
@@ -428,6 +439,76 @@ bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
       }
     }
 
+    // Step 3: Mark instructions publicly-typed if all inputs are publicly-typed.
+    for (MachineBasicBlock &MBB : MF) {
+      for (MachineInstr &MI : MBB) {
+        if (allInputsPublic(MI, getInstrPrivacyIn(&MI)) && !MI.isCall()) {
+          const bool WasPubInstr = isPublicInstr(MI);
+          Changed |= setPublicInstr(MI);
+          if (!WasPubInstr && DumpIncremental)
+            errs() << "pub-instr-in: " << MI;
+        }
+      }
+    }
+
+    // Step 4: Mark instructions publicly-typed if all outputs are publicly-typed.
+    for (MachineBasicBlock &MBB : MF) {
+      for (MachineInstr &MI : MBB) {
+        if (anyDataOutputPublic(MI, getInstrPrivacyOut(&MI)) && !MI.isCall()) {
+          const bool WasPubInstr = isPublicInstr(MI);
+          Changed |= setPublicInstr(MI);
+          if (!WasPubInstr && DumpIncremental)
+            errs() << "pub-instr-out: " << MI;
+        }
+      }
+    }
+
+    // Step 5: Publicly-type all inputs and outputs of public instructions.
+    for (MachineBasicBlock &MBB : MF) {
+      for (MachineInstr &MI : MBB) {
+        if (isPublicInstr(MI)) {
+          PrivacyMask In = getInstrPrivacyIn(&MI);
+          PrivacyMask Out = getInstrPrivacyOut(&MI);
+          for (const MachineOperand &MO : MI.operands()) {
+            if (MO.isReg()) {
+              if (MO.isDef()) {
+                Out.set(MO.getReg(), PubliclyTyped);
+              } else if (MO.isUse()) {
+                In.set(MO.getReg(), PubliclyTyped);
+              } else {
+                llvm_unreachable("");
+              }
+            }
+          }
+          Changed |= getInstrPrivacyIn(&MI).inheritPublic(In, DiffPtr);
+          PrintDiff("pub-inst-in", MI);
+          Changed |= getInstrPrivacyOut(&MI).inheritPublic(Out, DiffPtr);
+          PrintDiff("pub-inst-out", MI);
+        }
+      }
+    }
+
+    // Step 6: Transfer forward.
+    for (MachineBasicBlock &MBB : MF) {
+      for (MachineInstr &MI : MBB) {
+        PrivacyMask Privacy = getInstrPrivacyIn(&MI);
+        setClobberedRegistersPrivacy(MI, Privacy, PrivatelyTyped);
+        Changed |= getInstrPrivacyOut(&MI).inheritPublic(Privacy, DiffPtr);
+        PrintDiff("transfer-fwd", MI);
+      }
+    }
+
+    // Step 7: Transfer backward.
+    for (MachineBasicBlock &MBB : MF) {
+      for (MachineInstr &MI : MBB) {
+        PrivacyMask Privacy = getInstrPrivacyOut(&MI);
+        setClobberedRegistersPrivacy(MI, Privacy, PrivatelyTyped);
+        Changed |= getInstrPrivacyIn(&MI).inheritPublic(Privacy, DiffPtr);
+        PrintDiff("transfer-bwd", MI);
+      }
+    }
+    
+#if 0
     // Step 3: Instruction forward transfer.
     for (MachineBasicBlock &MBB : MF) {
       for (MachineInstr &MI : MBB) {
@@ -497,6 +578,7 @@ bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
         PrintDiff("instr-side", MI);
       }
     }
+#endif
 
     // Step 6.1: Sync empty block in- and out-privacies.
     for (MachineBasicBlock &MBB : MF) {

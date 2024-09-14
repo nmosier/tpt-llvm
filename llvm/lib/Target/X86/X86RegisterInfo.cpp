@@ -298,6 +298,7 @@ X86RegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
   if (F.hasFnAttribute("no_callee_saved_registers"))
     return CSR_NoRegs_SaveList;
 
+#if 0
   if (llsct::NoCalleeSavedRegs() && F.hasAddressTaken()) {
     switch (F.getLinkage()) {
     case Function::InternalLinkage:
@@ -306,6 +307,7 @@ X86RegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
       return CSR_NoRegs_SaveList;
     }
   }
+#endif
   
 
   switch (CC) {

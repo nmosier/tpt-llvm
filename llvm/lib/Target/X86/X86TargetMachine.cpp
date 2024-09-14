@@ -105,7 +105,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeX86Target() {
   initializeX86ReturnThunksPass(PR);
   initializeX86DAGToDAGISelPass(PR);
   initializeX86LLSCTPass(PR);
-  initializeX86TaintCFIPass(PR);
+  initializeX86PrivacyTypeAnalysisPass(PR);
 }
 
 static std::unique_ptr<TargetLoweringObjectFile> createTLOF(const Triple &TT) {
@@ -552,14 +552,14 @@ void X86PassConfig::addPostRegAlloc() {
   // analyses needed by the LVIHardening pass when compiling at -O0.
   if (getOptLevel() != CodeGenOpt::None)
     addPass(createX86LoadValueInjectionLoadHardeningPass());
-  // addPass(createX86LLSCTPass());
+
+  // PTeX: Stage 1.
+  addPass(createX86LLSCTPass());
 }
 
 void X86PassConfig::addPreSched2() {
   addPass(createX86ExpandPseudoPass());
   addPass(createX86KCFIPass());
-  // addPass(createX86LLSCTPass());
-  // addPass(createX86TaintCFIPass());
 }
 
 void X86PassConfig::addPreEmitPass() {
@@ -581,8 +581,11 @@ void X86PassConfig::addPreEmitPass() {
   addPass(createX86DiscriminateMemOpsPass());
   addPass(createX86InsertPrefetchPass());
   addPass(createX86InsertX87waitPass());
+
+  // PTeX: Stage 2.
+  // PTEX-TODO: May need to move this even later to avoid missing
+  // late-inserted instructions.
   addPass(createX86LLSCTPass());
-  addPass(createX86TaintCFIPass());
 }
 
 void X86PassConfig::addPreEmitPass2() {

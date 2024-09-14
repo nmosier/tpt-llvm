@@ -15,49 +15,60 @@ using namespace llvm;
 
 namespace tpe {
 
-  static cl::opt<bool> EnablePrivMem {
-    "tpe-privm",
-    cl::init(true),
-    cl::desc("[TPE] Enable insertion of PRIVM prefixes"),
-  };
+static cl::opt<bool> AllowUntyped {
+  "x86-ptex-allow-untyped",
+  cl::desc("Allow untyped instructions (issue warning, but don't abort)"),
+  cl::init(true),
+  cl::Hidden,
+};
 
-  void X86MCInstLowerTPE(const MachineInstr *MI, MCInst& OutMI) {
-    if (!(llsct::EnableLLSCT && EnablePrivMem))
-      return;
+void X86MCInstLowerTPE(const MachineInstr *MI, MCInst& OutMI) {
+  if (!llsct::EnableLLSCT)
+    return;
+  
+  const auto addFlag = [&OutMI] (auto f) {
+    const auto flags = OutMI.getFlags();
+    assert((flags & f) == 0);
+    OutMI.setFlags(flags | f);
+  };
     
-    const auto addFlag = [&OutMI] (auto f) {
-      const auto flags = OutMI.getFlags();
-      assert((flags & f) == 0);
-      OutMI.setFlags(flags | f);
-    };
-    
-    // Declassify flag
-    bool privty = MI->getFlag(MachineInstr::TPEPrivM);
-    bool pubty = MI->getFlag(MachineInstr::TPEPubM);
-    assert(!(privty && pubty));
-    if (MI->mayLoadOrStore()) {
-      if (!(privty || pubty))  {
-	switch (tpe::PrivacyPolicyOpt) {
-	case tpe::ct:
-	  privty = true;
-	  // errs() << "warning: converting untyped access to private: " << *MI;
-	  break;
-	case tpe::sandbox:
-	  pubty = true;
-	  break;
-	default:
-	  llvm_unreachable("Unsupported threat model");
-	}
-      }
-      if (privty) {
-	addFlag(X86::IP_TPE_PRIVM);
-	// errs() << "[lower] privately-typed access: " << *MI;
+  // Declassify flag
+  bool privty = MI->getFlag(MachineInstr::TPEPrivM);
+  bool pubty = MI->getFlag(MachineInstr::TPEPubM);
+  assert(!(privty && pubty));
+
+#if 0
+  // Does this instruction have any explicit outputs or implicit EFLAGS output?
+  const bool RequiresType = llvm::any_of(MI->operands(), [] (const MachineOperand &MO) -> bool {
+    if (MO.isReg() && MO.isDef()) {
+      if (MO.isImplicit()) {
+        return MO.getReg() == X86::EFLAGS;
       } else {
-	// errs() << "[lower] publicly-typed access: " << *MI;
+        return true;
       }
     } else {
-      assert(!(privty || pubty));
+      return false;
+    }
+  });
+
+  if (!RequiresType) {
+    assert(!(pubty || privty) && "Found type attached to instruction that shouldn't have a type!");
+    return;
+  }
+#endif
+  
+  if (privty) {
+    addFlag(X86::IP_TPE_PRIVM); // PTEX-TODO: Rename.
+  } else if (pubty) {
+    // Default case: no prefix required.
+    // addFlag(X86::IP_TPE_PUBM);
+  } else {
+    if (AllowUntyped) {
+      WithColor::warning() << "PTeX embedding: encountered untyped instruction: " << *MI;
+    } else {
+      report_fatal_error("PTeX embedding: encountered untyped instruction");
     }
   }
+}
   
 }

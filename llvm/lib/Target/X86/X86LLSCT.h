@@ -11,8 +11,6 @@
 // TODO: Move to llsct namespace?
 namespace llsct {
   extern bool EnableLLSCT;
-
-  bool NoCalleeSavedRegs();
 }
 
 namespace llvm::X86 {

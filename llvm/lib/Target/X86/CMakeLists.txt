@@ -1,6 +1,3 @@
-# add_compile_options(-g -O0) # FIXME: remove this once done debugging
-add_compile_options(-g -O1)
-
 add_llvm_component_group(X86 HAS_JIT)
 
 set(LLVM_TARGET_DEFINITIONS X86.td)
@@ -27,6 +24,8 @@ if (X86_GEN_FOLD_TABLES)
 endif()
 
 add_public_tablegen_target(X86CommonTableGen)
+
+# add_compile_options(-g -O0)
 
 set(sources
   X86AsmPrinter.cpp
@@ -94,9 +93,7 @@ set(sources
   X86InsertWait.cpp
   X86LLSCT.cpp
   X86LLSCTUtil.cpp
-  X86Declassify.cpp
-  X86TaintCFI.cpp
-  X86Protect.cpp
+  X86PrivacyTypeAnalysis.cpp
   X86ReturnHardening.cpp
   )
 

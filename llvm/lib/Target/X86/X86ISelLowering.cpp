@@ -4891,10 +4891,12 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
       Mask = RegInfo->getNoPreservedMask();
   }
 
+#if 0
   // LLSCT/TPE: EXPERIMENTAL
   if (llsct::NoCalleeSavedRegs()) {
     Mask = RegInfo->getNoPreservedMask();
   }
+#endif
 
   // Define a new register mask from the existing mask.
   uint32_t *RegMask = nullptr;
