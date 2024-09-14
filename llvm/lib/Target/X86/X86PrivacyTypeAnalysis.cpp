@@ -199,9 +199,9 @@ void PrivacyMask::setRegMask(const uint32_t *RegMask, PrivacyType Ty, bool inver
   }
 }
 
-[[nodiscard]] static bool isPublicInstr(const MachineInstr& MI) { return MI.getFlag(MachineInstr::TPEPubM); }
-[[nodiscard]] static bool setPublicInstr(MachineInstr &MI) {
-  const bool Changed = !isPublicInstr(MI);
+[[nodiscard]] static bool getInstrPublic(const MachineInstr& MI) { return MI.getFlag(MachineInstr::TPEPubM); }
+[[nodiscard]] static bool setInstrPublic(MachineInstr &MI) {
+  const bool Changed = !getInstrPublic(MI);
   MI.setFlag(MachineInstr::TPEPubM);
   return Changed;
 }
@@ -258,7 +258,7 @@ const X86PrivacyTypeAnalysis::BasicBlockSet &X86PrivacyTypeAnalysis::getBlockSuc
 }
 
 static bool allInputsPublic(const MachineInstr &MI, const PrivacyMask &Privacy) {
-  if (MI.mayLoad() && !isPublicInstr(MI))
+  if (MI.mayLoad() && !getInstrPublic(MI))
     return false;
 
   for (const MachineOperand &MO : MI.operands())
@@ -269,7 +269,7 @@ static bool allInputsPublic(const MachineInstr &MI, const PrivacyMask &Privacy) 
 }
 
 static bool allOutputsPublic(const MachineInstr &MI, const PrivacyMask &Privacy) {
-  if (MI.mayStore() && !isPublicInstr(MI))
+  if (MI.mayStore() && !getInstrPublic(MI))
     return false;
 
   for (const MachineOperand &MO : MI.operands())
@@ -400,229 +400,124 @@ bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
 
   // PTEX-TODO: Need to fix up privacy types at function entry. Specifically, type all callee-saved registers public.
 
-  // PART II: Iterative data-flow propoagation.
-
   bool Changed;
+  PrivacyMask Diff;
+  PrivacyMask *DiffPtr = (DumpIncremental ? &Diff : nullptr);
+  auto PrintDiff = [&] (const char *Name, const auto& Elt) {
+    if (DiffPtr && !Diff.allPrivate()) {
+      errs() << "===== " << Name << " =====\n";
+      errs() << Name << ": " << Elt;
+      Diff.print(errs(), MF.getSubtarget().getRegisterInfo());
+      errs() << "\n==========\n";
+    }
+  };
   unsigned NumIters = 0;
+  
+  // PART II: Iterative data-flow propagation.
   do {
     Changed = false;
 
-    PrivacyMask Diff;
-    PrivacyMask *DiffPtr = (DumpIncremental ? &Diff : nullptr);
-    auto PrintDiff = [&] (const char *Name, const auto& Elt) {
-      if (DiffPtr && !Diff.allPrivate()) {
-        errs() << "===== " << Name << " =====\n";
-        errs() << Name << ": " << Elt;
-        Diff.print(errs(), MF.getSubtarget().getRegisterInfo());
-        errs() << "\n==========\n";
-      }
-    };
-
-    // Step 1: Basic block forward meet.
+    // SECTION II-A: Backward data-flow.
     for (MachineBasicBlock &MBB : MF) {
-      // Don't meet on the entry block.
-      if (&MBB == &MF.front())
-        continue;
-      const auto& preds = getBlockPredecessors(&MBB);
-      assert(!preds.empty() && "A non-entry basic block has no predecessors!");
-      auto pred_it = preds.begin();
-      PrivacyMask Privacy = getBlockPrivacyOut(*pred_it++);
-      while (pred_it != preds.end())
-        Privacy.inheritPrivate(getBlockPrivacyOut(*pred_it++));
-      Changed |= getBlockPrivacyIn(&MBB).inheritPublic(Privacy, DiffPtr);
-    }
 
-    // Step 2: Basic block backward meet.
-    for (MachineBasicBlock &MBB : MF) {
+      // STEP II-A-1: Block-level backward meet.
       for (MachineBasicBlock *SuccMBB : getBlockSuccessors(&MBB)) {
         Changed |= getBlockPrivacyOut(&MBB).inheritPublic(getBlockPrivacyIn(SuccMBB), DiffPtr);
       }
-    }
 
-    // Step 3: Mark instructions publicly-typed if all inputs are publicly-typed.
-    for (MachineBasicBlock &MBB : MF) {
-      for (MachineInstr &MI : MBB) {
-        if (allInputsPublic(MI, getInstrPrivacyIn(&MI)) && !MI.isCall()) {
-          const bool WasPubInstr = isPublicInstr(MI);
-          Changed |= setPublicInstr(MI);
-          if (!WasPubInstr && DumpIncremental)
-            errs() << "pub-instr-in: " << MI;
+      // STEP II-A-2: Step backwards through basic block.
+      PrivacyMask Privacy = getBlockPrivacyOut(&MBB);
+      for (MachineInstr &MI : llvm::reverse(MBB)) {
+
+        // SUBSTEP II-A-2-i: Copy step privacy to instruction's out-privacy.
+        Changed |= getInstrPrivacyOut(&MI).inheritPublic(Privacy, DiffPtr);
+        Privacy = getInstrPrivacyOut(&MI);
+        PrintDiff("fwd-instr-out", MI);
+        // PTEX-TODO: Should we assert equality?
+        
+        // SUBSTEP II-A-2-ii: Mark instruction public if any data outputs are public.
+        if (anyDataOutputPublic(MI, Privacy) && !MI.isCall()) {
+          if (DumpIncremental && !getInstrPublic(MI))
+            errs() << "fwd-instr-pub: " << MI;
+          Changed |= setInstrPublic(MI);
         }
-      }
-    }
 
-    // Step 4: Mark instructions publicly-typed if all outputs are publicly-typed.
-    for (MachineBasicBlock &MBB : MF) {
-      for (MachineInstr &MI : MBB) {
-        if (anyDataOutputPublic(MI, getInstrPrivacyOut(&MI)) && !MI.isCall()) {
-          const bool WasPubInstr = isPublicInstr(MI);
-          Changed |= setPublicInstr(MI);
-          if (!WasPubInstr && DumpIncremental)
-            errs() << "pub-instr-out: " << MI;
-        }
-      }
-    }
+        // SUBSTEP II-A-2-iii: Mark all clobbered registers private.
+        setClobberedRegistersPrivacy(MI, Privacy, PrivatelyTyped);
 
-    // Step 5: Publicly-type all inputs and outputs of public instructions.
-    for (MachineBasicBlock &MBB : MF) {
-      for (MachineInstr &MI : MBB) {
-        if (isPublicInstr(MI)) {
-          PrivacyMask In = getInstrPrivacyIn(&MI);
-          PrivacyMask Out = getInstrPrivacyOut(&MI);
+        // SUBSTEP II-A-2-iv: Mark all inputs public if instruction is public.
+        if (getInstrPublic(MI)) {
           for (const MachineOperand &MO : MI.operands()) {
-            if (MO.isReg()) {
-              if (MO.isDef()) {
-                Out.set(MO.getReg(), PubliclyTyped);
-              } else if (MO.isUse()) {
-                In.set(MO.getReg(), PubliclyTyped);
-              } else {
-                llvm_unreachable("");
-              }
+            if (MO.isReg() && MO.isUse()) {
+              Privacy.set(MO.getReg(), PubliclyTyped);
             }
           }
-          Changed |= getInstrPrivacyIn(&MI).inheritPublic(In, DiffPtr);
-          PrintDiff("pub-inst-in", MI);
-          Changed |= getInstrPrivacyOut(&MI).inheritPublic(Out, DiffPtr);
-          PrintDiff("pub-inst-out", MI);
         }
-      }
-    }
 
-    // Step 6: Transfer forward.
-    for (MachineBasicBlock &MBB : MF) {
-      for (MachineInstr &MI : MBB) {
-        PrivacyMask Privacy = getInstrPrivacyIn(&MI);
-        setClobberedRegistersPrivacy(MI, Privacy, PrivatelyTyped);
-        Changed |= getInstrPrivacyOut(&MI).inheritPublic(Privacy, DiffPtr);
-        PrintDiff("transfer-fwd", MI);
-      }
-    }
-
-    // Step 7: Transfer backward.
-    for (MachineBasicBlock &MBB : MF) {
-      for (MachineInstr &MI : MBB) {
-        PrivacyMask Privacy = getInstrPrivacyOut(&MI);
-        setClobberedRegistersPrivacy(MI, Privacy, PrivatelyTyped);
+        // SUBSTEP II-A-2-v: Copy out step privacy to instruction's in-privacy.
         Changed |= getInstrPrivacyIn(&MI).inheritPublic(Privacy, DiffPtr);
-        PrintDiff("transfer-bwd", MI);
+        Privacy = getInstrPrivacyIn(&MI);
+        PrintDiff("fwd-instr-in", DiffPtr);
+        
       }
+
+      // STEP II-A-3: Copy out privacy to block's in-privacy.
+      Changed |= getBlockPrivacyIn(&MBB).inheritPublic(Privacy, DiffPtr);
+
     }
-    
-#if 0
-    // Step 3: Instruction forward transfer.
+
+    // SECTION II-B: Forward data-flow.
     for (MachineBasicBlock &MBB : MF) {
+
+      // STEP II-B-1: Basic block forward meet.
+      if (&MBB != &MF.front()) {
+        const auto& preds = getBlockPredecessors(&MBB);
+        assert(!preds.empty() && "A non-entry MBB has no predecessors!");
+        auto pred_it = preds.begin();
+        PrivacyMask Privacy = getBlockPrivacyOut(*pred_it++);
+        while (pred_it != preds.end())
+          Privacy.inheritPrivate(getBlockPrivacyOut(*pred_it++));
+        Changed |= getBlockPrivacyIn(&MBB).inheritPublic(Privacy, DiffPtr);
+      }
+
+      // STEP II-B-2: Step forward through basic block.
+      PrivacyMask Privacy = getBlockPrivacyIn(&MBB);
       for (MachineInstr &MI : MBB) {
-        PrivacyMask Privacy = getInstrPrivacyIn(&MI);
 
-        // 3.1: Are all inputs public?
-        // PTEX-TODO: Rewrite this function to directly return privacy type.
-        const bool AllInputsPublic = allInputsPublic(MI, Privacy);
-
-        // 3.2: Mark clobbered registers private.
-        setClobberedRegistersPrivacy(MI, Privacy, PrivatelyTyped);
-
-        // 3.3: Mark outputs private/public accordingly.
-        const PrivacyType Ty = ((AllInputsPublic && isArithInstr(MI)) ? PubliclyTyped : PrivatelyTyped);
-        for (const MachineOperand &MO : MI.operands())
-          if (MO.isReg() && MO.isDef())
-            Privacy.set(MO.getReg(), Ty);
-
-        // PTEX-TODO: Set memory as private to, e.g., for stores?
-
-        Changed |= getInstrPrivacyOut(&MI).inheritPublic(Privacy, DiffPtr);
-        PrintDiff("instr-fwd", MI);
-      }
-    }
-
-    // Step 4: Instruction backward transfer.
-    for (MachineBasicBlock &MBB : MF) {
-      for (MachineInstr &MI : MBB) {        
-        PrivacyMask Privacy = getInstrPrivacyOut(&MI);
-
-        // 4.1: Are all outputs public?
-        // PTEX-TODO: Can change this function to directly return privacy type.
-        const bool AllOutputsPublic = allOutputsPublic(MI, Privacy);
-
-        // 4.2: Mark clobbered registers private.
-        setClobberedRegistersPrivacy(MI, Privacy, PrivatelyTyped);
-
-        // 4.2: Mark inputs private/public accordingly.
-        const PrivacyType Ty = ((AllOutputsPublic && isArithInstr(MI)) ? PubliclyTyped : PrivatelyTyped);
-        for (const MachineOperand &MO : MI.operands())
-          if (MO.isReg() && MO.isUse() && !MO.isUndef())
-            Privacy.set(MO.getReg(), Ty);
-
-        // PTEX-TODO: Set memory as private for loads, e.g.?
-
+        // SUBSTEP II-B-2-i: Copy step privacy to instruction's in-privacy.
         Changed |= getInstrPrivacyIn(&MI).inheritPublic(Privacy, DiffPtr);
-        PrintDiff("instr-bwd", MI);
-      }
-    }
+        Privacy = getInstrPrivacyIn(&MI);
+        PrintDiff("bwd-instr-in", MI);
+        // PTEX-TODO: Assert equality here?
 
-    // Step 5: Instruction sideways transfer.
-    for (MachineBasicBlock &MBB : MF) {
-      for (MachineInstr &MI : MBB) {
-        // PTEX-TODO: Should be able to handle calls here?
-        if (MI.isCall())
-          continue;
+        // SUBSTEP II-B-2-ii: Mark insturction public if all data inputs are public.
+        if (allInputsPublic(MI, Privacy) && !MI.isCall()) {
+          if (DumpIncremental && !getInstrPublic(MI))
+            errs() << "bwd-instr-pub " << MI;
+          Changed |= setInstrPublic(MI);
+        }
 
-        PrivacyMask Privacy = getInstrPrivacyOut(&MI);
+        // SUBSTEP II-B-2-iii: Mark all clobbered registers private.
+        setClobberedRegistersPrivacy(MI, Privacy, PrivatelyTyped);
 
-        // If one explicit output is public or EFLAGS is public, then all explicit/EFLAGS outputs are public.
-        if (anyDataOutputPublic(MI, Privacy))
-          for (const MachineOperand &MO : MI.operands())
-            if (MO.isReg() && MO.isDef())
+        // SUBSTEP II-B-2-iv: Mark all outputs public if instruction is public.
+        if (allInputsPublic(MI, Privacy)) {
+          for (const MachineOperand &MO : MI.operands()) {
+            if (MO.isReg() && MO.isDef()) {
               Privacy.set(MO.getReg(), PubliclyTyped);
-
-        Changed |= getInstrPrivacyOut(&MI).inheritPublic(Privacy, DiffPtr);
-        PrintDiff("instr-side", MI);
-      }
-    }
-#endif
-
-    // Step 6.1: Sync empty block in- and out-privacies.
-    for (MachineBasicBlock &MBB : MF) {
-      if (!MBB.empty())
-        continue;
-      PrivacyMask &BlockIn = getBlockPrivacyIn(&MBB);
-      PrivacyMask &BlockOut = getBlockPrivacyOut(&MBB);
-      Changed |= BlockIn.inheritPublic(BlockOut, nullptr);
-      Changed |= BlockOut.inheritPublic(BlockIn, nullptr);
-    }
-
-    // Step 6.2: Sync non-empty block and instruction in-privacies.
-    for (MachineBasicBlock &MBB : MF) {
-      if (MBB.empty())
-        continue;
-      PrivacyMask &BlockIn = getBlockPrivacyIn(&MBB);
-      PrivacyMask &InstrIn = getInstrPrivacyIn(&MBB.front());
-      Changed |= BlockIn.inheritPublic(InstrIn, nullptr);
-      Changed |= InstrIn.inheritPublic(BlockIn, nullptr);
-    }
-
-    // Step 6.3: Sync non-empty block and insturction out-privacies.
-    for (MachineBasicBlock &MBB : MF) {
-      if (MBB.empty())
-        continue;
-      PrivacyMask &BlockOut = getBlockPrivacyOut(&MBB);
-      PrivacyMask &InstrOut = getInstrPrivacyOut(&MBB.back());
-      Changed |= BlockOut.inheritPublic(InstrOut, nullptr);
-      Changed |= InstrOut.inheritPublic(BlockOut, nullptr);
-    }
-
-    // Step 6.4: Sync instruction in- and out-privacies.
-    for (MachineBasicBlock &MBB : MF) {
-      for (MachineInstr &MI : MBB) {
-        if (MachineInstr *SuccMI = MI.getNextNode()) {
-          PrivacyMask &InstrOut = getInstrPrivacyOut(&MI);
-          PrivacyMask &InstrIn = getInstrPrivacyIn(SuccMI);
-          Changed |= InstrOut.inheritPublic(InstrIn, nullptr);
-          Changed |= InstrIn.inheritPublic(InstrOut, nullptr);
+            }
+          }
         }
-      }
-    }
 
-    // Step ???: Mark load data public? Mark store data public?
+        // SUBSTEP II-B-2-v: Copy out privacy to instruction out-privacy.
+        Changed |= getInstrPrivacyOut(&MI).inheritPublic(Privacy, DiffPtr);
+        Privacy = getInstrPrivacyOut(&MI);
+        PrintDiff("bwd-instr-out", MI);
+      }
+
+      // STEP II-B-3: Copy out step privacy to block out-privacy.
+      Changed |= getBlockPrivacyOut(&MBB).inheritPublic(Privacy, DiffPtr);
+    }
 
     ++NumIters;
 

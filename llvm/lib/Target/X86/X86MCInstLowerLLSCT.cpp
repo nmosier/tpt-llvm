@@ -64,7 +64,7 @@ void X86MCInstLowerTPE(const MachineInstr *MI, MCInst& OutMI) {
     // addFlag(X86::IP_TPE_PUBM);
   } else {
     if (AllowUntyped) {
-      WithColor::warning() << "PTeX embedding: encountered untyped instruction: " << *MI;
+      // WithColor::warning() << "PTeX embedding: encountered untyped instruction: " << *MI;
     } else {
       report_fatal_error("PTeX embedding: encountered untyped instruction");
     }
