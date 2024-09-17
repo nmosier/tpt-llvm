@@ -45,7 +45,13 @@ static llvm::cl::opt<bool> DumpIncremental {
 static std::array<Register, 4> AlwaysPublicRegisters = {X86::NoRegister, X86::RSP, X86::RIP, X86::SSP};
 
 bool llvm::X86::registerIsAlwaysPublic(Register Reg) {
-  return llvm::is_contained(AlwaysPublicRegisters, Reg);
+  return llvm::is_contained(AlwaysPublicRegisters, PrivacyMask::canonicalizeRegister(Reg));
+}
+
+X86::PrivacyMask::Bitset X86::PrivacyMask::getPrivateBitset() const {
+  Bitset bitset = this->PubRegs;
+  bitset.flip();
+  return bitset;
 }
 
 struct DataflowStep {
@@ -137,6 +143,10 @@ Register PrivacyMask::canonicalizeRegister(Register Reg) {
     return Reg64;
   // PTEX-TODO: Do we need to worry about YMMs, etc?
   return Reg;  
+}
+
+bool PrivacyMask::isCanonicalRegister(Register Reg) {
+  return canonicalizeRegister(Reg) == Reg;
 }
 
 void PrivacyMask::set(Register Reg, PrivacyType Ty) {
@@ -394,6 +404,25 @@ bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
+  // Step 4: Mark all frame setup and destroy inputs/outputs publicly-typed.
+  for (MachineBasicBlock &MBB : MF) {
+    for (MachineInstr &MI : MBB) {
+      if (MI.getFlag(MachineInstr::FrameSetup) ||
+          MI.getFlag(MachineInstr::FrameDestroy)) {
+        for (MachineOperand &MO : MI.operands()) {
+          if (MO.isReg()) {
+            if (MO.isUse()) {
+              getInstrPrivacyIn(&MI).set(MO.getReg(), PubliclyTyped);
+            } else if (MO.isDef()) {
+              getInstrPrivacyOut(&MI).set(MO.getReg(), PubliclyTyped);
+            } else {
+              llvm_unreachable("register operand is neither def nor use!");
+            }
+          }
+        }
+      }
+    }
+  }
 
   // PTEX-NOTE: We don't need to mark callee-saved registers as publicly-typed,
   // since the saves will be inserted later on. 
@@ -457,7 +486,7 @@ bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
         // SUBSTEP II-A-2-v: Copy out step privacy to instruction's in-privacy.
         Changed |= getInstrPrivacyIn(&MI).inheritPublic(Privacy, DiffPtr);
         Privacy = getInstrPrivacyIn(&MI);
-        PrintDiff("fwd-instr-in", DiffPtr);
+        PrintDiff("fwd-instr-in", MI);
         
       }
 
@@ -568,16 +597,6 @@ void X86PrivacyTypeAnalysis::validate(MachineFunction &MF) {
         DoAssert(getInstrPrivacyOut(&MI), MI, "out");
       }
     }
-  }
-}
-
-template <typename OutputIt>
-OutputIt PrivacyMask::getPublicRegs(OutputIt out) const {
-  for (unsigned Reg = 0; Reg < PubRegs.size(); ++Reg) {
-    if (!PubRegs.test(Reg))
-      continue;
-    assert(canonicalizeRegister(Reg) == Reg);
-    *out++ = Reg;
   }
 }
 

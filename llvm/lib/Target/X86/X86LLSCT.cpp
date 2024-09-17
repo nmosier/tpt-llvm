@@ -20,6 +20,10 @@
 
 using namespace llvm;
 
+using X86::PrivacyMask;
+using X86::PubliclyTyped;
+using X86::PrivatelyTyped;
+
 #define PASS_KEY "x86-ptex"
 #define DEBUG_TYPE PASS_KEY
 
@@ -42,8 +46,6 @@ cl::opt<bool, true> EnableLLSCTOpt {
 namespace {
 
 
-class PrivacyTypes; // PTEX-FIXME: Remove.
-
 class X86LLSCT final : public MachineFunctionPass {
 public:
   static char ID;
@@ -63,11 +65,11 @@ private:
   // Achieves this by inserting register moves around any violations.
   // Returns whether any instructions were inserted, i.e., whether it
   // changed the function.
-  bool normalizePrivacyTypes(MachineFunction &MF, PrivacyTypes &PrivTys);
-
-  bool lowerPrivacyTypes(MachineFunction &MF, PrivacyTypes &PrivTys);
-
   void validatePrivacyTypes(const X86PrivacyTypeAnalysis &PTA);
+
+  [[nodiscard]] bool instrumentPublicArguments(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
+  [[nodiscard]] bool instrumentPublicCalleeReturnValues(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
+  [[nodiscard]] bool eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
 };
 
 }
@@ -78,32 +80,206 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
   if (!llsct::EnableLLSCT)
     return false;
 
+  bool Changed = false;
+
+  errs() << "===== X86PTeX BEFORE: " << MF.getName() << " =====\n";
+  MF.dump();
+ 
   // Step 1: Infer privacy types for the function.
-  const auto &PrivacyTypes = getAnalysis<X86PrivacyTypeAnalysis>();
+  auto &PrivacyTypes = getAnalysis<X86PrivacyTypeAnalysis>();
 
-  // Step 2: Normalize
-  // What property do we want to uphold?
-  // That registers only change from public to private or private to public
-  // when written to the output of a function.
-  // Extend privacy types with function in-types and out-types.
+  // Step 2: Insert publicly-typed register copies for all publicly-typed, live-in, non-callee-saved registers.
+  Changed |= instrumentPublicArguments(MF, PrivacyTypes);
+
+  // Step 3: Insert publicly-typed register copies for all publicly-typed callee return values.
+  Changed |= instrumentPublicCalleeReturnValues(MF, PrivacyTypes);
+
+  // Step 4: Eliminate all privately-typed callee-saved registers.
+  Changed |= eliminatePrivateCalleeSavedRegisters(MF, PrivacyTypes);
+
+  // TODO: Verify some properties, like that there are no privately-typed callee-saved registers.
+
+  errs() << "===== X86PTeX AFTER: " << MF.getName() << " =====\n";
+  MF.dump();
+
+  return Changed;
+}
+
+bool X86LLSCT::instrumentPublicArguments(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys) {
+  MachineBasicBlock &MBB = MF.front();
+  auto MBBI = MBB.begin();
+  const PrivacyMask &Privacy = PrivTys.getBlockPrivacyIn(&MBB);
+  const auto *TII = MF.getSubtarget().getInstrInfo();
   
-#if 0
-  auto PrivacyTypes = X86::runTaintAnalysis(MF);
+  // Collect set of publicly-typed arguments.
+  std::set<Register> Regs;
+  Privacy.getPublicRegs(std::inserter(Regs, Regs.end()));
+  for (const auto *CSR = MF.getRegInfo().getCalleeSavedRegs(); *CSR != X86::NoRegister; ++CSR)
+    Regs.erase(*CSR);
 
-  // Then, preprocess the function to ensure that only output registers
-  // can change their privacy from private to public.
-  normalizePrivacyTypes(MF, PrivacyTypes);
+  // Insert publicly-typed register copies.
+  for (Register Reg : Regs) {
+    if (!X86::registerIsAlwaysPublic(Reg)) {
+      TII->copyPhysReg(MBB, MBBI, DebugLoc(), Reg, Reg, /*KillSrc*/true);
+    }
+  }
 
-  lowerPrivacyTypes(MF, PrivacyTypes);
+  // Add privacy type info.
+  for (auto MBBI2 = MBB.begin(); MBBI2 != MBBI; ++MBBI2) {
+    MachineInstr *MI = &*MBBI2;
+    PrivTys.getInstrPrivacyIn(MI) = Privacy;
+    PrivTys.getInstrPrivacyOut(MI) = Privacy;
+  }
 
-  const StringRef DumpFunctionName = DumpFunction.getValue().c_str();
-  if (!DumpFunctionName.empty() && MF.getName().contains(DumpFunctionName))
-    MF.getFunction().print(errs());
+  return !Regs.empty();
+}
 
-  return true;
-#else
-  return false;
-#endif
+bool X86LLSCT::instrumentPublicCalleeReturnValues(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys) {
+  bool Changed = false;
+  const auto *TII = MF.getSubtarget().getInstrInfo();
+  
+  for (MachineBasicBlock &MBB : MF) {
+    for (MachineInstr &MI : MBB) {
+      if (MI.isCall()) {
+        const PrivacyMask &Privacy = PrivTys.getInstrPrivacyOut(&MI);
+        const auto CallMBBI = MI.getIterator();
+        auto NewMBBI_begin = [&] () {
+          return std::next(CallMBBI);
+        };
+        const auto NewMBBI_end = NewMBBI_begin();
+        llvm::SmallSet<Register, 1> ReturnRegs; // So we don't protect any registers twice.
+        for (const MachineOperand &MO : MI.operands()) {
+          if (MO.isReg() && MO.isDef()) {
+            const Register Reg = MO.getReg();
+            if (!X86::registerIsAlwaysPublic(Reg) && Privacy.get(Reg) == X86::PubliclyTyped) {
+              if (ReturnRegs.insert(Reg).second) {
+                // The callee's return value is publicly-typed.
+                TII->copyPhysReg(MBB, NewMBBI_end, DebugLoc(), Reg, Reg, /*KillSrc*/true);
+              }
+            }
+          }
+        }
+
+        // Update privacy for newly inserted instructions.
+        for (auto MBBI = NewMBBI_begin(); MBBI != NewMBBI_end; ++MBBI) {
+          MachineInstr *MI = &*MBBI;
+          PrivTys.getInstrPrivacyIn(MI) = Privacy;
+          PrivTys.getInstrPrivacyOut(MI) = Privacy;
+        }
+
+        Changed = (NewMBBI_begin() != NewMBBI_end);
+      }
+    }
+  }
+
+  return Changed;
+}
+
+bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys) {
+  bool Changed = false;
+  MachineFrameInfo &MFI = MF.getFrameInfo();
+  const auto *TII = MF.getSubtarget().getInstrInfo();
+  const auto *TRI = MF.getSubtarget().getRegisterInfo();
+
+  // TODO: Need to handle tail calls.
+
+  for (MachineBasicBlock &MBB : MF) {
+    LivePhysRegs LPR(*TRI);
+    LPR.addLiveInsNoPristines(MBB);
+    for (MachineInstr &MI : MBB) {
+      // Dump liveness?
+      LPR.print(errs());
+      if (MI.isCall()) {
+        PrivacyMask &CallPrivacyIn = PrivTys.getInstrPrivacyIn(&MI);
+        PrivacyMask &CallPrivacyOut = PrivTys.getInstrPrivacyOut(&MI);
+        // Recall that the call's regmask marks which registers are preserved.
+        // We'll want to ensure that any registers that are preserved are publicly-typed, not privately-typed.
+
+        const auto PreMBBI = MI.getIterator();
+        const auto PostMBBI = [&] () -> MachineBasicBlock::iterator {
+          return std::next(PreMBBI);
+        };
+        
+        const PrivacyMask::Bitset PrivateRegs = CallPrivacyIn.getPrivateBitset();
+        const auto RegMaskIt = llvm::find_if(MI.operands(), [] (const MachineOperand &MO) -> bool {
+          return MO.isRegMask();
+        });
+        assert(RegMaskIt != MI.operands_end());
+        const PrivacyMask::Bitset CalleeSavedRegs = PrivacyMask::regmaskToBitset(RegMaskIt->getRegMask());
+        const PrivacyMask::Bitset PrivateCalleeSaves = (PrivateRegs & CalleeSavedRegs);
+        // TODO: Need canonical iterator over bitset.
+        const auto &RegClass = X86::GR64RegClass;
+        llvm::SmallSet<Register, 4> HandledRegs;
+        for (Register Reg : LPR) {
+          Reg = PrivacyMask::canonicalizeRegister(Reg);
+          if (RegClass.contains(Reg) && PrivateCalleeSaves.test(Reg) && HandledRegs.insert(Reg).second) {
+            errs() << "privately-typed callee-saved register: " << TRI->getRegAsmName(Reg) << "\n";
+
+            // Allocate new stack spill slot.
+            const unsigned SpillSize = TRI->getSpillSize(RegClass);
+            assert(SpillSize == 8);
+            const Align SpillAlign = TRI->getSpillAlign(RegClass);
+            const int FrameIndex = MFI.CreateSpillStackObject(SpillSize, SpillAlign);
+
+            // Store to spill slot before call.
+            if (!MI.isReturn()) {
+
+              // Insert store instruction.
+              TII->storeRegToStackSlot(MBB, PreMBBI, Reg, /*isKill*/true, FrameIndex, &RegClass, TRI, X86::NoRegister);
+              MachineInstr *StoreMI = &*std::prev(PreMBBI);
+              assert(StoreMI->mayStore());
+
+              // Set in- and out-privacy for StoreMI (unchanged).
+              PrivTys.getInstrPrivacyIn(StoreMI) = CallPrivacyIn;
+              PrivTys.getInstrPrivacyOut(StoreMI) = CallPrivacyIn;
+            }
+
+            // Then zero out the register.
+            {
+
+              // Insert zero instruction.
+              const Register SubReg = getX86SubSuperRegister(Reg, 32);
+              MachineInstr *ZeroMI = BuildMI(MBB, PreMBBI, DebugLoc(), TII->get(X86::MOV32r0), SubReg).getInstr();
+              
+              // Set in-privacy for ZeroMI (unchanged).
+              PrivTys.getInstrPrivacyIn(ZeroMI) = CallPrivacyIn;
+              
+              // Mark register as now publicly-typed.
+              CallPrivacyIn.set(Reg, PubliclyTyped);
+              
+              // Set out-privacy for ZeroMI.
+              PrivTys.getInstrPrivacyOut(ZeroMI) = CallPrivacyOut;
+            }
+
+            // Load from spill slot after call.
+            if (!MI.isReturn()) {
+
+              // Insert load instruction.
+              TII->loadRegFromStackSlot(MBB, PostMBBI(), Reg, FrameIndex, &RegClass, TRI, X86::NoRegister);
+              MachineInstr *LoadMI = &*PostMBBI();
+              assert(LoadMI->mayLoad());
+
+              // Set out-privacy for LoadMI (unchanged).
+              PrivTys.getInstrPrivacyOut(LoadMI) = CallPrivacyOut;
+
+              // Mark register as publicly-typed before load.
+              CallPrivacyOut.set(Reg, PubliclyTyped);
+
+              // Set in-privacy for LoadMI.
+              PrivTys.getInstrPrivacyIn(LoadMI) = CallPrivacyOut;
+            }
+
+            Changed = true;
+          }
+        }
+      }
+
+      SmallVector<std::pair<MCPhysReg, const MachineOperand *>> Clobbers;
+      LPR.stepForward(MI, Clobbers);
+    }
+  }
+
+  return Changed;
 }
 
 #if 0

@@ -20,12 +20,16 @@ enum PrivacyType {
 };
 
 class PrivacyMask {
+public:
   using Bitset = std::bitset<NUM_TARGET_REGS>;
+
+private:
   Bitset PubRegs;
 
-  static Register canonicalizeRegister(Register Reg);
-
 public:
+  static Register canonicalizeRegister(Register Reg);
+  static bool isCanonicalRegister(Register Reg);
+
   void set(Register Reg, PrivacyType Ty);
   PrivacyType get(Register Reg) const;
 
@@ -43,7 +47,9 @@ public:
 
   bool allPrivate() const;
 
-private:
+  Bitset getPrivateBitset() const;
+  Bitset getPublicBitset() const;
+
   static Bitset regmaskToBitset(const uint32_t *mask);
 };
 
@@ -88,6 +94,7 @@ private:
 
   void clear();
 
+public:
   PrivacyNode &getBlockPrivacy(MachineBasicBlock *MBB);
   PrivacyMask &getBlockPrivacyIn(MachineBasicBlock *MBB);
   PrivacyMask &getBlockPrivacyOut(MachineBasicBlock *MBB);
@@ -96,6 +103,7 @@ private:
   PrivacyMask &getInstrPrivacyIn(MachineInstr *MI);
   PrivacyMask &getInstrPrivacyOut(MachineInstr *MI);
 
+private:
   void dumpResults(raw_ostream &os, MachineFunction &MF);
   void validate(MachineFunction &MF);
 
@@ -105,6 +113,17 @@ private:
 namespace X86 {
 
 bool registerIsAlwaysPublic(Register Reg);
+
+template <typename OutputIt>
+OutputIt PrivacyMask::getPublicRegs(OutputIt out) const {
+  for (unsigned Reg = 0; Reg < PubRegs.size(); ++Reg) {
+    if (!PubRegs.test(Reg))
+      continue;
+    assert(canonicalizeRegister(Reg) == Reg);
+    *out++ = Reg;
+  }
+  return out;
+}
 
 }
 
