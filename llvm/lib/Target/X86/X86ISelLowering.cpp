@@ -66,7 +66,6 @@
 #include <bitset>
 #include <cctype>
 #include <numeric>
-#include "llvm/TPE.h"
 #include "X86LLSCT.h"
 using namespace llvm;
 

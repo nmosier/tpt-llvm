@@ -125,6 +125,8 @@ OutputIt PrivacyMask::getPublicRegs(OutputIt out) const {
   return out;
 }
 
+bool DumpCheckFilter(const MachineFunction &MF);
+
 }
 
 }

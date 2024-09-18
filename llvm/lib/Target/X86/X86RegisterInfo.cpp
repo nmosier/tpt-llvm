@@ -35,7 +35,6 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
-#include "X86LLSCT.h"
 
 using namespace llvm;
 

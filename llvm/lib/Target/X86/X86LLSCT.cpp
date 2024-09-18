@@ -27,17 +27,29 @@ using X86::PrivatelyTyped;
 #define PASS_KEY "x86-ptex"
 #define DEBUG_TYPE PASS_KEY
 
-// PTEX-TODO: Rename.
-namespace llsct {
+namespace llvm::X86 {
 
-bool EnableLLSCT = false;
-
-cl::opt<bool, true> EnableLLSCTOpt {
+static cl::opt<bool> EnablePTeXOpt {
   PASS_KEY,
   cl::desc("Enable PTeX"),
-  cl::location(EnableLLSCT),
   cl::init(false),
+  cl::Hidden,
 };
+
+static cl::opt<bool> EnablePTeXDump {
+  PASS_KEY "-dump",
+  cl::desc("Dump PTeX before/after"),
+  cl::init(false),
+  cl::Hidden,
+};
+
+bool EnablePTeX() {
+  return static_cast<bool>(EnablePTeXOpt);
+}
+
+static bool DumpPTeX(const MachineFunction &MF) {
+  return EnablePTeXDump && X86::DumpCheckFilter(MF);
+}
 
 }
 
@@ -77,13 +89,16 @@ private:
 char X86LLSCT::ID = 0;
 
 bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
-  if (!llsct::EnableLLSCT)
+  if (!X86::EnablePTeX())
     return false;
 
   bool Changed = false;
 
-  errs() << "===== X86PTeX BEFORE: " << MF.getName() << " =====\n";
-  MF.dump();
+  if (X86::DumpPTeX(MF)) {
+    errs() << "===== X86PTeX BEFORE: " << MF.getName() << " =====\n";
+    MF.dump();
+    errs() << "===========================================\n";
+  }
  
   // Step 1: Infer privacy types for the function.
   auto &PrivacyTypes = getAnalysis<X86PrivacyTypeAnalysis>();
@@ -99,8 +114,11 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
 
   // TODO: Verify some properties, like that there are no privately-typed callee-saved registers.
 
-  errs() << "===== X86PTeX AFTER: " << MF.getName() << " =====\n";
-  MF.dump();
+  if (X86::DumpPTeX(MF)) {
+    errs() << "===== X86PTeX AFTER: " << MF.getName() << " =====\n";
+    MF.dump();
+    errs() << "============================================\n";
+  }
 
   return Changed;
 }
@@ -181,14 +199,10 @@ bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86Priv
   const auto *TII = MF.getSubtarget().getInstrInfo();
   const auto *TRI = MF.getSubtarget().getRegisterInfo();
 
-  // TODO: Need to handle tail calls.
-
   for (MachineBasicBlock &MBB : MF) {
     LivePhysRegs LPR(*TRI);
     LPR.addLiveInsNoPristines(MBB);
     for (MachineInstr &MI : MBB) {
-      // Dump liveness?
-      LPR.print(errs());
       if (MI.isCall()) {
         PrivacyMask &CallPrivacyIn = PrivTys.getInstrPrivacyIn(&MI);
         PrivacyMask &CallPrivacyOut = PrivTys.getInstrPrivacyOut(&MI);
@@ -211,9 +225,9 @@ bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86Priv
         const auto &RegClass = X86::GR64RegClass;
         llvm::SmallSet<Register, 4> HandledRegs;
         for (Register Reg : LPR) {
+          // FIXME: Don't want to spill canonicalized live register. Only want to spill live subreg.
           Reg = PrivacyMask::canonicalizeRegister(Reg);
           if (RegClass.contains(Reg) && PrivateCalleeSaves.test(Reg) && HandledRegs.insert(Reg).second) {
-            errs() << "privately-typed callee-saved register: " << TRI->getRegAsmName(Reg) << "\n";
 
             // Allocate new stack spill slot.
             const unsigned SpillSize = TRI->getSpillSize(RegClass);
