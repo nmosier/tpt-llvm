@@ -18,6 +18,8 @@
 #include "llvm/Analysis/ValueTracking.h"
 #include "X86PrivacyTypeAnalysis.h"
 
+#define PTEX_DEBUG 1
+
 using namespace llvm;
 
 using X86::PrivacyMask;
@@ -61,7 +63,7 @@ namespace {
 class X86LLSCT final : public MachineFunctionPass {
 public:
   static char ID;
-  X86LLSCT(): MachineFunctionPass(ID) {}
+  X86LLSCT(bool Instrument) : MachineFunctionPass(ID), Instrument(Instrument) {}
 
   void getAnalysisUsage(AnalysisUsage& AU) const override {
     AU.setPreservesCFG();
@@ -72,6 +74,8 @@ public:
   bool runOnMachineFunction(MachineFunction& MF) override;
 
 private:
+  bool Instrument;
+  
   // Ensures that register types only transition from private->public
   // if the register is the output of an instruction.
   // Achieves this by inserting register moves around any violations.
@@ -105,14 +109,48 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
   // Step 1: Infer privacy types for the function.
   auto &PrivacyTypes = getAnalysis<X86PrivacyTypeAnalysis>();
 
-  // Step 2: Insert publicly-typed register copies for all publicly-typed, live-in, non-callee-saved registers.
-  Changed |= instrumentPublicArguments(MF, PrivacyTypes);
+#if 1
+  if (const char *s = std::getenv("INSTRUMENT"); s && !atoi(s))
+    return false;
+#endif
 
-  // Step 3: Insert publicly-typed register copies for all publicly-typed callee return values.
-  Changed |= instrumentPublicCalleeReturnValues(MF, PrivacyTypes);
+  auto skip = [] (const char *key) -> bool {
+    if (!PTEX_DEBUG)
+      return false;
+    if (const char *value = std::getenv(key); value && !atoi(value))
+      return true;
+    return false;
+  };
 
-  // Step 4: Eliminate all privately-typed callee-saved registers.
-  Changed |= eliminatePrivateCalleeSavedRegisters(MF, PrivacyTypes);
+#if 0
+  // DEBUG: Print landing pad stuff.
+  for (const auto &LPI : MF.getLandingPads()) {
+    errs() << "LandingPadBlock:\n" << *LPI.LandingPadBlock;
+    auto PrintLabels = [] (const auto& Labels) {
+      for (const MCSymbol *Sym : Labels) {
+        errs() << "  " << Sym << "\n";
+      }
+    };
+    errs() << "BeginLabels:\n"; PrintLabels(LPI.BeginLabels);
+    errs() << "EndLabels:\n"; PrintLabels(LPI.EndLabels);
+    errs() << "LandingPadLabel: " << LandingPadLabel << "\n";
+  }
+#endif
+  
+  if (Instrument) {
+
+    // Step 2: Insert publicly-typed register copies for all publicly-typed, live-in, non-callee-saved registers.
+    if (!skip("PUBARGS"))
+      Changed |= instrumentPublicArguments(MF, PrivacyTypes);
+
+    // Step 3: Insert publicly-typed register copies for all publicly-typed callee return values.
+    if (!skip("PUBRETS"))
+      Changed |= instrumentPublicCalleeReturnValues(MF, PrivacyTypes);
+
+    // Step 4: Eliminate all privately-typed callee-saved registers.
+    if (!skip("CSRS"))
+      Changed |= eliminatePrivateCalleeSavedRegisters(MF, PrivacyTypes);
+  }
 
   // TODO: Verify some properties, like that there are no privately-typed callee-saved registers.
 
@@ -231,9 +269,75 @@ bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86Priv
   MachineFrameInfo &MFI = MF.getFrameInfo();
   const auto *TII = MF.getSubtarget().getInstrInfo();
   const auto *TRI = MF.getSubtarget().getRegisterInfo();
-  const auto &MRI = MF.getRegInfo();
 
   assert(MF.getRegInfo().tracksLiveness());
+
+#if 0
+  // Make sure we don't have any landingpads with more than one invoke-style call.
+  // NOTE: This is actually present in some programs.
+  for (const LandingPadInfo &LPI : MF.getLandingPads()) {
+    assert(LPI.BeginLabels.size() == 1);
+    assert(LPI.EndLabels.size() == 1);
+  }
+#endif
+
+  using PrivateSpillInfo = std::map<Register, int>;
+  std::map<const LandingPadInfo *, PrivateSpillInfo> InvokePrivateSpillInfo;
+  std::map<MachineInstr *, PrivateSpillInfo> CallPrivateSpillInfo;
+
+  // Precompute EH_LABELs for function.
+  std::map<const MCSymbol *, MachineInstr *> Labels;
+  for (MachineBasicBlock &MBB : MF) {
+    for (MachineInstr &MI : MBB) {
+      if (MI.isEHLabel()) {
+        assert(MI.getNumOperands() == 1);
+        const MachineOperand &MO = MI.getOperand(0);
+        assert(MO.isMCSymbol());
+        Labels[MO.getMCSymbol()] = &MI;
+      }
+    }
+  }
+
+  // Precompute invokes.
+  std::map<MachineInstr *, const LandingPadInfo *> InvokeToLandingPad;
+  for (const LandingPadInfo &LPI : MF.getLandingPads()) {
+    assert(LPI.BeginLabels.size() == LPI.EndLabels.size());
+    for (const auto &[BeginLabel, EndLabel] : llvm::zip_equal(LPI.BeginLabels, LPI.EndLabels)) {
+      const auto BeginMBBI = std::next(Labels.at(BeginLabel)->getIterator());
+      const auto EndMBBI = Labels.at(EndLabel)->getIterator();
+      const auto InvokeMBBI =
+          std::find_if(BeginMBBI, EndMBBI, [] (const MachineInstr &MI) -> bool { return MI.isCall(); });
+      assert(InvokeMBBI != EndMBBI);
+      InvokeToLandingPad[&*InvokeMBBI] = &LPI;
+    }
+  }
+
+  auto getSpillInfo = [&] (MachineInstr *MI) -> PrivateSpillInfo * {
+    const auto InvokeToLandingPadIt = InvokeToLandingPad.find(MI);
+    if (InvokeToLandingPadIt == InvokeToLandingPad.end()) {
+      // Regular call.
+      return &CallPrivateSpillInfo[MI];
+    } else {
+      return &InvokePrivateSpillInfo[InvokeToLandingPadIt->second];
+    }
+  };
+
+  // DEBUG
+  static int debug_min = -1;
+  static int debug_max = -1;
+  if (debug_min < 0) {
+    if (const char *s = std::getenv("MIN"))
+      debug_min = std::atoi(s);
+    else
+      debug_min = 0;
+  }
+  if (debug_max < 0) {
+    if (const char *s = std::getenv("MAX"))
+      debug_max = std::atoi(s);
+    else
+      debug_max = INT_MAX;
+  }
+  static int debug_cur = 0;
 
   for (MachineBasicBlock &MBB : MF) {
     LivePhysRegs LPR(*TRI);
@@ -282,17 +386,37 @@ bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86Priv
           // We shouldn't've already handled it.
           assert(!HandledRegs.contains(CanonicalReg));
 
+#if 0
+          if (!(debug_min <= debug_cur && debug_cur <= debug_max)) {
+            ++debug_cur;
+            continue;
+          }
+#endif
+
           HandledRegs.insert(CanonicalReg);
+
+#if 0
+          errs() << debug_cur << " : " << MF.getName() << " : " << TRI->getRegAsmName(Reg) << " : "; MI.dump();
+#endif
 
           const auto *RegClass = TRI->getMinimalPhysRegClass(Reg);
 
+#if 0
           // Allocate new stack spill slot.
           // TODO: Can revert this to using 'official' methods.
           const unsigned SpillSize = TRI->getRegSizeInBits(Reg, MRI);
           const Align SpillAlign = Align(SpillSize);
           const int FrameIndex = MFI.CreateSpillStackObject(SpillSize, SpillAlign);
-#if 0
-          errs() << "Reg: " << TRI->getRegAsmName(Reg) << ", SpillSize: " << SpillSize << "\n";
+#else
+          const unsigned SpillSize = TRI->getSpillSize(*RegClass);
+          const Align SpillAlign = TRI->getSpillAlign(*RegClass);
+          PrivateSpillInfo &PSI = *getSpillInfo(&MI);
+          auto PSI_it = PSI.find(Reg);
+          if (PSI_it == PSI.end()) {
+            const int FrameIndex = MFI.CreateSpillStackObject(SpillSize, SpillAlign);
+            PSI_it = PSI.emplace(Reg, FrameIndex).first;
+          }
+          const int FrameIndex = PSI_it->second;
 #endif
 
           // Store to spill slot before call.
@@ -344,11 +468,29 @@ bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86Priv
           }
 
           Changed = true;
+
+          ++debug_cur;
         }
       }
 
       SmallVector<std::pair<MCPhysReg, const MachineOperand *>> Clobbers;
       LPR.stepForward(MI, Clobbers);
+    }
+  }
+
+  // Restore at each landingpad.
+  for (const auto &[LPI, SpillInfo] : InvokePrivateSpillInfo) {
+    MachineBasicBlock &MBB = *LPI->LandingPadBlock;
+    auto MBBI = MBB.begin();
+    if (LPI->LandingPadLabel) {
+      assert(MBBI == Labels.at(LPI->LandingPadLabel)->getIterator());
+      ++MBBI;
+    }
+
+    for (const auto &[Reg, FrameIndex] : SpillInfo) {
+      const auto *RegClass = TRI->getMinimalPhysRegClass(Reg);
+      TII->loadRegFromStackSlot(MBB, MBBI, Reg, FrameIndex, RegClass, TRI, X86::NoRegister);
+      Changed = true;
     }
   }
 
@@ -360,6 +502,6 @@ INITIALIZE_PASS_BEGIN(X86LLSCT, PASS_KEY "-pass",
 INITIALIZE_PASS_END(X86LLSCT, PASS_KEY "-pass",
 		    "X86 LLSCT pass", false, false)
 
-FunctionPass *llvm::createX86LLSCTPass() {
-  return new X86LLSCT();
+FunctionPass *llvm::createX86LLSCTPass(bool Instrument) {
+  return new X86LLSCT(Instrument);
 }

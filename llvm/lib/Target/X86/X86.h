@@ -163,7 +163,7 @@ FunctionPass *createX86LoadValueInjectionRetHardeningPass();
 FunctionPass *createX86SpeculativeLoadHardeningPass();
 FunctionPass *createX86SpeculativeExecutionSideEffectSuppression();
 
-FunctionPass *createX86LLSCTPass();
+FunctionPass *createX86LLSCTPass(bool Instrument);
 FunctionPass *createX86PrivacyTypeAnalysisPass();
 
 FunctionPass *createX86ProtectPass();

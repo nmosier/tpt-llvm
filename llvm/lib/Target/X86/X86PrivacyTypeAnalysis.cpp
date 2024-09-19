@@ -253,6 +253,12 @@ void X86PrivacyTypeAnalysis::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.setPreservesAll();
 }
 
+MachineFunctionProperties X86PrivacyTypeAnalysis::getRequiredProperties() const {
+  MachineFunctionProperties Props = MachineFunctionPass::getRequiredProperties();
+  Props.set(MachineFunctionProperties::Property::TracksLiveness);
+  return Props;
+}
+
 void X86PrivacyTypeAnalysis::addBlockEdge(MachineBasicBlock *Src, MachineBasicBlock *Dst) {
   BlockSuccessors[Src].insert(Dst);
   BlockPredecessors[Dst].insert(Src);

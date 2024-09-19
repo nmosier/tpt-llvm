@@ -73,6 +73,7 @@ public:
   X86PrivacyTypeAnalysis();
 
   void getAnalysisUsage(AnalysisUsage& AU) const override;
+  MachineFunctionProperties getRequiredProperties() const override;
   bool runOnMachineFunction(MachineFunction &F) override;
 
   using BasicBlockSet = llvm::SmallSet<MachineBasicBlock *, 2>;

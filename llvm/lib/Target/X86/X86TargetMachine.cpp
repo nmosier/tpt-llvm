@@ -554,7 +554,7 @@ void X86PassConfig::addPostRegAlloc() {
     addPass(createX86LoadValueInjectionLoadHardeningPass());
 
   // PTeX: Stage 1.
-  addPass(createX86LLSCTPass());
+  addPass(createX86LLSCTPass(/*Instrument*/true));
 }
 
 void X86PassConfig::addPreSched2() {
@@ -585,7 +585,8 @@ void X86PassConfig::addPreEmitPass() {
   // PTeX: Stage 2.
   // PTEX-TODO: May need to move this even later to avoid missing
   // late-inserted instructions.
-  addPass(createX86LLSCTPass());
+  // PTEX-TODO: Can re-enable instrumentation or assert no instrumentation required to find LLVM bugs.
+  addPass(createX86LLSCTPass(/*Instrument*/false));
 }
 
 void X86PassConfig::addPreEmitPass2() {
