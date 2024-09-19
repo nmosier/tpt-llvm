@@ -47,7 +47,7 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizerCommon.h"
-#include "X86MCInstLowerLLSCT.h"
+#include "X86MCInstLowerPTeX.h"
 #include <string>
 
 using namespace llvm;

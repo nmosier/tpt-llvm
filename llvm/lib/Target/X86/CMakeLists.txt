@@ -71,7 +71,7 @@ set(sources
   X86LoadValueInjectionLoadHardening.cpp
   X86LoadValueInjectionRetHardening.cpp
   X86MCInstLower.cpp
-  X86MCInstLowerLLSCT.cpp
+  X86MCInstLowerPTeX.cpp
   X86MachineFunctionInfo.cpp
   X86MacroFusion.cpp
   X86OptimizeLEAs.cpp
