@@ -117,6 +117,8 @@ bool registerIsAlwaysPublic(Register Reg);
 template <typename OutputIt>
 OutputIt PrivacyMask::getPublicRegs(OutputIt out) const {
   for (unsigned Reg = 0; Reg < PubRegs.size(); ++Reg) {
+    if (Reg == X86::NoRegister)
+      continue;
     if (!PubRegs.test(Reg))
       continue;
     assert(canonicalizeRegister(Reg) == Reg);
@@ -126,6 +128,7 @@ OutputIt PrivacyMask::getPublicRegs(OutputIt out) const {
 }
 
 bool DumpCheckFilter(const MachineFunction &MF);
+ArrayRef<Register> getAlwaysPublicRegisters();
 
 }
 

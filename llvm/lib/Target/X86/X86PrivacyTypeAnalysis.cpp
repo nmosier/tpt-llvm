@@ -78,6 +78,12 @@ static std::array<Register, 5> AlwaysPublicRegisters = {
   X86::NoRegister, X86::RSP, X86::RIP, X86::SSP, X86::MXCSR,
 };
 
+namespace llvm::X86 {
+ArrayRef<Register> getAlwaysPublicRegisters() {
+  return AlwaysPublicRegisters;
+}
+}
+
 bool llvm::X86::registerIsAlwaysPublic(Register Reg) {
   return llvm::is_contained(AlwaysPublicRegisters, PrivacyMask::canonicalizeRegister(Reg));
 }
@@ -87,15 +93,6 @@ X86::PrivacyMask::Bitset X86::PrivacyMask::getPrivateBitset() const {
   bitset.flip();
   return bitset;
 }
-
-struct DataflowStep {
-  const char *name;
-  MachineInstr *MI;
-
-  DataflowStep(const char *name, MachineInstr *MI): name(name), MI(MI) {}
-  
-};
-static std::optional<DataflowStep> dataflow_step;
 
 static int getJumpTableIndexFromAddr(const MachineInstr &MI) {
   const MCInstrDesc &Desc = MI.getDesc();
@@ -373,10 +370,13 @@ bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
   // Step 1: Mark all transmitted operands as public.
   for (MachineBasicBlock &MBB : MF) {
     for (MachineInstr &MI : MBB) {
+
       auto PubliclyTypeUse = [&] (const MachineOperand &MO) {
         if (!MO.isReg())
           return;
         assert(MO.isUse());
+        if (MO.isUndef())
+          return;
         getInstrPrivacyIn(&MI).set(MO.getReg(), PubliclyTyped);
       };
 
@@ -413,7 +413,7 @@ bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
           if (!MO.isReg())
             continue;
           const Register Reg = MO.getReg();
-          if (MO.isUse()) {
+          if (MO.isUse() && !MO.isUndef()) {
             getInstrPrivacyIn(&MI).set(Reg, PubliclyTyped);
           } else if (MO.isDef() && !MI.isCall()) {
             getInstrPrivacyOut(&MI).set(Reg, PubliclyTyped);
@@ -457,7 +457,8 @@ bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
         for (MachineOperand &MO : MI.operands()) {
           if (MO.isReg()) {
             if (MO.isUse()) {
-              getInstrPrivacyIn(&MI).set(MO.getReg(), PubliclyTyped);
+              if (!MO.isUndef())
+                getInstrPrivacyIn(&MI).set(MO.getReg(), PubliclyTyped);
             } else if (MO.isDef()) {
               getInstrPrivacyOut(&MI).set(MO.getReg(), PubliclyTyped);
             } else {
@@ -468,6 +469,27 @@ bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
       }
     }
   }
+
+  if (DumpResultsPartial(MF)) {
+    errs() << "===== Privacy Types (Partial, After Frame-Setup/Destroy) =====\n";
+    dumpResults(errs(), MF);
+    errs() << "==============================================================\n";
+  }
+
+  // TODO: Should merge all into same MBB.
+
+#if 0
+  // Step 5: Mark all undef'ed register operands privately-typed.
+  for (MachineBasicBlock &MBB : MF) {
+    for (MachineInstr &MI : MBB) {
+      for (const MachineOperand &MO : MI.operands()) {
+        if (MO.isReg() && MO.isUse() && MO.isUndef()) {
+          getInstrPrivacyIn(&MI).set(MO.getReg(), PrivatelyTyped);
+        }
+      }
+    }
+  }
+#endif
 
   // PTEX-NOTE: We don't need to mark callee-saved registers as publicly-typed,
   // since the saves will be inserted later on. 
@@ -528,7 +550,7 @@ bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
         // SUBSTEP II-A-2-iv: Mark all inputs public if instruction is public.
         if (getInstrPublic(MI)) {
           for (const MachineOperand &MO : MI.operands()) {
-            if (MO.isReg() && MO.isUse()) {
+            if (MO.isReg() && MO.isUse() && !MO.isUndef()) {
               Privacy.set(MO.getReg(), PubliclyTyped);
             }
           }
@@ -615,12 +637,12 @@ bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
 
   // PTEX-TODO: Consider adding an instruction flag to mark whether an instruction that may load is publicly-typed.
 
-  validate(MF);
-
   // Print out for debugging.
   if (DumpResults(MF)) {
     dumpResults(errs(), MF);
   }
+
+  validate(MF);  
 
   return false;
 }
@@ -637,6 +659,7 @@ void X86PrivacyTypeAnalysis::validate(MachineFunction &MF) {
 
   // Make sure RSP is always publicly-typed.
   // PTEX-TODO: Make standalone function?
+  // TODO: This is redundant I think./
   for (Register Reg : AlwaysPublicRegisters) {
     auto DoAssert = [&] (const PrivacyMask &Privacy, const auto &X, const char *dir) {
       const PrivacyType Ty = Privacy.get(Reg);
@@ -655,6 +678,19 @@ void X86PrivacyTypeAnalysis::validate(MachineFunction &MF) {
       }
     }
   }
+
+#if 0
+  // Ensure all undef'ed registers are privately-typed.
+  for (MachineBasicBlock &MBB : MF) {
+    for (MachineInstr &MI : MBB) {
+      for (const MachineOperand &MO : MI.operands()) {
+        if (MO.isReg() && MO.isUse() && MO.isUndef()) {
+          assert(getInstrPrivacyIn(&MI).get(MO.getReg()) == PrivatelyTyped);
+        }
+      }
+    }
+  }
+#endif
 }
 
 void PrivacyMask::print(raw_ostream& os, const TargetRegisterInfo *TRI) const {
