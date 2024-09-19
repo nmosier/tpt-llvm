@@ -66,7 +66,6 @@
 #include <bitset>
 #include <cctype>
 #include <numeric>
-#include "X86LLSCT.h"
 using namespace llvm;
 
 #define DEBUG_TYPE "x86-isel"

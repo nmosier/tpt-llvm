@@ -91,7 +91,7 @@ set(sources
   X86VZeroUpper.cpp
   X86WinEHState.cpp
   X86InsertWait.cpp
-  X86LLSCT.cpp
+  X86PTeX.cpp
   X86LLSCTUtil.cpp
   X86PrivacyTypeAnalysis.cpp
   X86ReturnHardening.cpp
