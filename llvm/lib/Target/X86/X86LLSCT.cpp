@@ -102,7 +102,7 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
 
   if (X86::DumpPTeX(MF)) {
     errs() << "===== X86PTeX BEFORE: " << MF.getName() << " =====\n";
-    MF.dump();
+    MF.print(errs());
     errs() << "===========================================\n";
   }
  
@@ -156,7 +156,7 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
 
   if (X86::DumpPTeX(MF)) {
     errs() << "===== X86PTeX AFTER: " << MF.getName() << " =====\n";
-    MF.dump();
+    MF.print(errs());
     errs() << "============================================\n";
   }
 
@@ -482,10 +482,14 @@ bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86Priv
   for (const auto &[LPI, SpillInfo] : InvokePrivateSpillInfo) {
     MachineBasicBlock &MBB = *LPI->LandingPadBlock;
     auto MBBI = MBB.begin();
+
+    // Just insert before the landingpad's EH_LABEL for now.
+#if 0
     if (LPI->LandingPadLabel) {
       assert(MBBI == Labels.at(LPI->LandingPadLabel)->getIterator());
       ++MBBI;
     }
+#endif
 
     for (const auto &[Reg, FrameIndex] : SpillInfo) {
       const auto *RegClass = TRI->getMinimalPhysRegClass(Reg);
