@@ -14,7 +14,7 @@ namespace llvm {
 
 namespace X86 {
 
-enum PrivacyType {
+enum PrivacyType : uint8_t {
   PrivatelyTyped,
   PubliclyTyped,
 };
@@ -104,8 +104,10 @@ public:
   PrivacyMask &getInstrPrivacyIn(MachineInstr *MI);
   PrivacyMask &getInstrPrivacyOut(MachineInstr *MI);
 
-private:
+public:
   void dumpResults(raw_ostream &os, MachineFunction &MF);
+
+private:
   void validate(MachineFunction &MF);
 
   void transferInstrForward(MachineInstr &MI, PrivacyMask &Privacy);

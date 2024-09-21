@@ -7,6 +7,7 @@
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/MachineJumpTableInfo.h"
 #include "llvm/Support/WithColor.h"
+#include "X86PTeX.h"
 
 #define PASS_KEY "x86-privacy-types"
 
@@ -240,10 +241,13 @@ void PrivacyMask::setRegMask(const uint32_t *RegMask, PrivacyType Ty, bool inver
   }
 }
 
-[[nodiscard]] static bool getInstrPublic(const MachineInstr& MI) { return MI.getFlag(MachineInstr::TPEPubM); }
+[[nodiscard]] static bool getInstrPublic(const MachineInstr& MI) {
+  return X86::getInstrPrivacy(MI) == PubliclyTyped;
+}
+
 [[nodiscard]] static bool setInstrPublic(MachineInstr &MI) {
   const bool Changed = !getInstrPublic(MI);
-  MI.setFlag(MachineInstr::TPEPubM);
+  X86::setInstrPrivacy(MI, PubliclyTyped);
   return Changed;
 }
 
@@ -307,7 +311,7 @@ const X86PrivacyTypeAnalysis::BasicBlockSet &X86PrivacyTypeAnalysis::getBlockSuc
 static bool allInputsPublic(const MachineInstr &MI, const PrivacyMask &Privacy) {
   if (MI.mayLoad() && !getInstrPublic(MI))
     return false;
-
+  
   for (const MachineOperand &MO : MI.operands())
     if (MO.isReg() && MO.isUse() && !MO.isUndef() && Privacy.get(MO.getReg()) == PrivatelyTyped)
       return false;
@@ -337,6 +341,45 @@ static void setClobberedRegistersPrivacy(const MachineInstr &MI, PrivacyMask &Pr
       Privacy.setRegMask(MO.getRegMask(), Ty, true);
     }
   }
+}
+
+// Whether the instruction can be treated as if it has arithmetic dependencies, i.e.,
+// the outputs are public iff the inputs are public.
+static bool isArithInstr(const MachineInstr &MI) {
+  // If there are no output registers, then trivially not arithmetic.
+  if (llvm::none_of(MI.operands(), [] (const MachineOperand &MO) -> bool {
+    return MO.isReg() && MO.isDef();
+  }))
+    return false;
+
+  // Control flow instructions aren't arithmetic.
+  if (MI.isCall() || MI.isBranch())
+    return false;
+
+  // If it has at least one non-implicit-or-EFLAGS output, assume arithmetic.
+  if (llvm::none_of(MI.operands(), [] (const MachineOperand &MO) -> bool {
+    return MO.isReg() && MO.isDef() && (!MO.isImplicit() || MO.getReg() == X86::EFLAGS);
+  })) {
+    return true;
+  }
+
+  // Pushes and pops aren't arithmetic.
+  switch (MI.getOpcode()) {
+  case X86::PUSH16r:
+  case X86::PUSH32r:
+  case X86::PUSH16rmr:
+  case X86::PUSH32rmr:
+  case X86::PUSH16rmm:
+  case X86::PUSH32rmm:
+  case X86::PUSH64r:
+  case X86::PUSH64rmr:
+  case X86::PUSH64rmm:
+    return false;
+  }
+
+  
+  errs() << MI;
+  report_fatal_error("unhandled instruction with only implicit outputs");
 }
 
 bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
@@ -544,7 +587,7 @@ bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
         // PTEX-TODO: Should we assert equality?
         
         // SUBSTEP II-A-2-ii: Mark instruction public if any data outputs are public.
-        if (anyDataOutputPublic(MI, Privacy) && !MI.isCall()) {
+        if (isArithInstr(MI) && anyDataOutputPublic(MI, Privacy)) {
           if (DumpIncremental(MF) && !getInstrPublic(MI))
             errs() << "bwd-instr-pub: " << MI;
           Changed |= setInstrPublic(MI);
@@ -555,6 +598,7 @@ bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
 
         // SUBSTEP II-A-2-iv: Mark all inputs public if instruction is public.
         if (getInstrPublic(MI)) {
+          errs() << "HERE: " << MI;
           for (const MachineOperand &MO : MI.operands()) {
             if (MO.isReg() && MO.isUse() && !MO.isUndef()) {
               Privacy.set(MO.getReg(), PubliclyTyped);
@@ -615,7 +659,7 @@ bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
         setClobberedRegistersPrivacy(MI, Privacy, PrivatelyTyped);
 
         // SUBSTEP II-B-2-iv: Mark all outputs public if instruction is public.
-        if (allInputsPublic(MI, Privacy)) {
+        if (getInstrPublic(MI)) {
           for (const MachineOperand &MO : MI.operands()) {
             if (MO.isReg() && MO.isDef()) {
               Privacy.set(MO.getReg(), PubliclyTyped);

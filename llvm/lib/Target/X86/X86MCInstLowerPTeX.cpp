@@ -17,13 +17,28 @@ namespace llvm::X86 {
 static cl::opt<bool> AllowUntyped {
   "x86-ptex-allow-untyped",
   cl::desc("Allow untyped instructions (issue warning, but don't abort)"),
-  cl::init(true),
+  cl::init(false),
   cl::Hidden,
 };
 
+static bool shouldConsiderInstructionForPrefix(const MachineInstr &MI) {
+  if (!EnablePTeX())
+    return false;
+
+  if (MI.isCall())
+    return false;
+
+  if (llvm::none_of(MI.operands(), [] (const MachineOperand &MO) -> bool {
+    return MO.isReg() && MO.isDef();
+  }))
+    return false;
+
+  return true;
+}
+
 // PTEX-TODO: Rename function.
 void X86MCInstLowerTPE(const MachineInstr *MI, MCInst& OutMI) {
-  if (!EnablePTeX())
+  if (!shouldConsiderInstructionForPrefix(*MI))
     return;
   
   const auto addFlag = [&OutMI] (auto f) {
