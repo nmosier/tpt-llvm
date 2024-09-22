@@ -1,5 +1,6 @@
 #include "X86MCInstLowerPTeX.h"
 #include "X86PTeX.h"
+#include "X86PrivacyTypeAnalysis.h"
 #include "MCTargetDesc/X86BaseInfo.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/IR/DataLayout.h"
@@ -25,12 +26,9 @@ static bool shouldConsiderInstructionForPrefix(const MachineInstr &MI) {
   if (!EnablePTeX())
     return false;
 
-  if (MI.isCall())
-    return false;
-
-  if (llvm::none_of(MI.operands(), [] (const MachineOperand &MO) -> bool {
-    return MO.isReg() && MO.isDef();
-  }))
+  SmallVector<const MachineOperand *, 2> OutRegs;
+  X86::getInstrDataOutputs(MI, OutRegs);
+  if (OutRegs.empty() && !MI.mayLoad())
     return false;
 
   return true;

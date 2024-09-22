@@ -164,7 +164,6 @@ FunctionPass *createX86SpeculativeLoadHardeningPass();
 FunctionPass *createX86SpeculativeExecutionSideEffectSuppression();
 
 FunctionPass *createX86LLSCTPass(bool Instrument);
-FunctionPass *createX86PrivacyTypeAnalysisPass();
 
 FunctionPass *createX86ProtectPass();
 FunctionPass *createX86ReturnHardeningPass();
@@ -201,7 +200,6 @@ void initializeX86SpeculativeExecutionSideEffectSuppressionPass(PassRegistry &);
 void initializeX86SpeculativeLoadHardeningPassPass(PassRegistry &);
 void initializeX86TileConfigPass(PassRegistry &);
 void initializeX86LLSCTPass(PassRegistry &);
-void initializeX86PrivacyTypeAnalysisPass(PassRegistry &);
 void initializeX86ReturnHardeningPass(PassRegistry &);
 
 namespace X86AS {

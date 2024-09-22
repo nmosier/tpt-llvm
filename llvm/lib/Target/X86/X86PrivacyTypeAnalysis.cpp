@@ -252,27 +252,9 @@ void PrivacyMask::setRegMask(const uint32_t *RegMask, PrivacyType Ty, bool inver
 }
 
 
-void X86PrivacyTypeAnalysis::getAnalysisUsage(AnalysisUsage &AU) const {
-  MachineFunctionPass::getAnalysisUsage(AU);
-  AU.setPreservesAll();
-}
-
-MachineFunctionProperties X86PrivacyTypeAnalysis::getRequiredProperties() const {
-  MachineFunctionProperties Props = MachineFunctionPass::getRequiredProperties();
-  Props.set(MachineFunctionProperties::Property::TracksLiveness);
-  return Props;
-}
-
 void X86PrivacyTypeAnalysis::addBlockEdge(MachineBasicBlock *Src, MachineBasicBlock *Dst) {
   BlockSuccessors[Src].insert(Dst);
   BlockPredecessors[Dst].insert(Src);
-}
-
-void X86PrivacyTypeAnalysis::clear() {
-  BlockPrivacy.clear();
-  InstrPrivacy.clear();
-  BlockSuccessors.clear();
-  BlockPredecessors.clear();
 }
 
 PrivacyNode &X86PrivacyTypeAnalysis::getBlockPrivacy(MachineBasicBlock *MBB) {
@@ -319,12 +301,44 @@ static bool allInputsPublic(const MachineInstr &MI, const PrivacyMask &Privacy) 
   return true;
 }
 
-static bool anyDataOutputPublic(const MachineInstr &MI, const PrivacyMask &Privacy) {
-  // PTEX-TODO: Might be able to consider store flag here.
+bool X86::isPush(const MachineInstr &MI) {
+  switch (MI.getOpcode()) {
+  case X86::PUSH16r:
+  case X86::PUSH32r:
+  case X86::PUSH16rmr:
+  case X86::PUSH32rmr:
+  case X86::PUSH16rmm:
+  case X86::PUSH32rmm:
+  case X86::PUSH64r:
+  case X86::PUSH64rmr:
+  case X86::PUSH64rmm:
+    return true;
+  default:
+    return false;
+  }
+}
+
+void X86::getInstrDataOutputs(const MachineInstr &MI, SmallVectorImpl<const MachineOperand *> &Outs) {
+  if (MI.isCall() || MI.isReturn() || MI.isBranch())
+    return;
 
   for (const MachineOperand &MO : MI.operands())
-    if (MO.isReg() && MO.isDef() && (!MO.isImplicit() || MO.getReg() == X86::EFLAGS) &&
-        Privacy.get(MO.getReg()) == PubliclyTyped)
+    if (MO.isReg() && MO.isDef())
+      if (!(MO.isImplicit() && registerIsAlwaysPublic(MO.getReg())))
+        Outs.push_back(&MO);
+}
+
+void X86::PrivacyMask::markAllInstrOutsPublic(const MachineInstr &MI) {
+  for (const MachineOperand &MO : MI.operands())
+    if (MO.isReg() && MO.isDef())
+      set(MO.getReg(), PubliclyTyped);
+}
+
+static bool anyDataOutputPublic(const MachineInstr &MI, const PrivacyMask &Privacy) {
+  SmallVector<const MachineOperand *, 2> Outputs;      
+  X86::getInstrDataOutputs(MI, Outputs);
+  for (const MachineOperand *MO : Outputs)
+    if (Privacy.get(MO->getReg()) == PubliclyTyped)
       return true;
 
   return false;
@@ -343,6 +357,7 @@ static void setClobberedRegistersPrivacy(const MachineInstr &MI, PrivacyMask &Pr
   }
 }
 
+#if 0
 // Whether the instruction can be treated as if it has arithmetic dependencies, i.e.,
 // the outputs are public iff the inputs are public.
 static bool isArithInstr(const MachineInstr &MI) {
@@ -381,10 +396,9 @@ static bool isArithInstr(const MachineInstr &MI) {
   errs() << MI;
   report_fatal_error("unhandled instruction with only implicit outputs");
 }
+#endif
 
-bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
-  clear();
-
+void X86PrivacyTypeAnalysis::run() {
   // PTEX-TODO: Split these out into different functions.
 
   // PART I: Compute block-level control-flow graph.
@@ -458,6 +472,7 @@ bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
       for (MachineMemOperand *MMO : MI.memoperands()) {
         if (!MMO->getType().isPointer())
           continue;
+        (void) setInstrPublic(MI);
         for (const MachineOperand &MO : MI.operands()) {
           if (!MO.isReg())
             continue;
@@ -574,6 +589,7 @@ bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
       // STEP II-A-1: Block-level backward meet.
       for (MachineBasicBlock *SuccMBB : getBlockSuccessors(&MBB)) {
         Changed |= getBlockPrivacyOut(&MBB).inheritPublic(getBlockPrivacyIn(SuccMBB), DiffPtr);
+        PrintDiff("bwd-block-out", MBB);
       }
 
       // STEP II-A-2: Step backwards through basic block.
@@ -585,9 +601,14 @@ bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
         Privacy = getInstrPrivacyOut(&MI);
         PrintDiff("bwd-instr-out", MI);
         // PTEX-TODO: Should we assert equality?
-        
+
         // SUBSTEP II-A-2-ii: Mark instruction public if any data outputs are public.
-        if (isArithInstr(MI) && anyDataOutputPublic(MI, Privacy)) {
+        if (anyDataOutputPublic(MI, Privacy)) {
+#if 0
+          for (const MachineOperand &MO : MI.operands())
+            if (MO.isReg() && MO.isDef())
+              Privacy.set(MO.getReg(), PubliclyTyped);
+#endif
           if (DumpIncremental(MF) && !getInstrPublic(MI))
             errs() << "bwd-instr-pub: " << MI;
           Changed |= setInstrPublic(MI);
@@ -598,7 +619,6 @@ bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
 
         // SUBSTEP II-A-2-iv: Mark all inputs public if instruction is public.
         if (getInstrPublic(MI)) {
-          errs() << "HERE: " << MI;
           for (const MachineOperand &MO : MI.operands()) {
             if (MO.isReg() && MO.isUse() && !MO.isUndef()) {
               Privacy.set(MO.getReg(), PubliclyTyped);
@@ -615,7 +635,7 @@ bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
 
       // STEP II-A-3: Copy out privacy to block's in-privacy.
       Changed |= getBlockPrivacyIn(&MBB).inheritPublic(Privacy, DiffPtr);
-
+      PrintDiff("bwd-block-in", MBB);
     }
 
     if (DumpResultsPartial(MF)) {
@@ -693,8 +713,6 @@ bool X86PrivacyTypeAnalysis::runOnMachineFunction(MachineFunction &MF) {
   }
 
   validate(MF);  
-
-  return false;
 }
 
 void X86PrivacyTypeAnalysis::validate(MachineFunction &MF) {
@@ -796,7 +814,3 @@ void X86PrivacyTypeAnalysis::dumpResults(raw_ostream &os, MachineFunction &MF) {
     os << "\n";
   }
 }
-
-X86PrivacyTypeAnalysis::X86PrivacyTypeAnalysis() : MachineFunctionPass(ID) {}
-
-INITIALIZE_PASS(X86PrivacyTypeAnalysis, PASS_KEY, "X86 Privacy Type Analysis", true, true)

@@ -68,7 +68,6 @@ public:
 
   void getAnalysisUsage(AnalysisUsage& AU) const override {
     AU.setPreservesCFG();
-    AU.addRequired<X86PrivacyTypeAnalysis>();
     MachineFunctionPass::getAnalysisUsage(AU);
   }
 
@@ -84,10 +83,13 @@ private:
   // changed the function.
   void validatePrivacyTypes(MachineFunction &MF, const X86PrivacyTypeAnalysis &PTA);
 
+
+  // TODO: Make another object that has MF and PrivTys as member.
   [[nodiscard]] bool instrumentPublicArguments(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
   [[nodiscard]] bool instrumentPublicCalleeReturnValues(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
   [[nodiscard]] bool eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
   void addPrivacyPrefixes(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
+  std::optional<PrivacyType> computeInstrPrivacy(MachineInstr &MI, X86PrivacyTypeAnalysis &PrivTys);
 };
 
 }
@@ -107,9 +109,15 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
     MF.print(errs());
     errs() << "===========================================\n";
   }
+
+#if 0
+  // Step 1: Unfold all load memory operands.
+  Changed |= unfoldLoads(MF);
+#endif
  
   // Step 1: Infer privacy types for the function.
-  auto &PrivacyTypes = getAnalysis<X86PrivacyTypeAnalysis>();
+  X86PrivacyTypeAnalysis PrivacyTypes(MF);
+  PrivacyTypes.run();
 
 #if 1
   if (const char *s = std::getenv("INSTRUMENT"); s && !atoi(s))
@@ -171,6 +179,16 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
 
   return Changed;
 }
+
+#if 0
+static bool unfoldLoads(MachineFunction &MF) {
+  for (MachineBasicBlock &MBB : MF) {
+    for (MachineInstr &MI : MBB) {
+      
+    }
+  }
+}
+#endif
 
 bool X86LLSCT::instrumentPublicArguments(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys) {
   // Task:
@@ -390,6 +408,11 @@ bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86Priv
           if (!PrivateCalleeSaves.test(CanonicalReg))
             continue;
 
+          // DEBUG
+          for (Register SuperReg : TRI->superregs(Reg)) {
+            errs() << "super(" << TRI->getRegAsmName(Reg) << "): " << TRI->getRegAsmName(SuperReg) << "\n";
+          }
+
           // We shouldn't've already handled it.
           assert(!HandledRegs.contains(CanonicalReg));
 
@@ -402,19 +425,10 @@ bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86Priv
 
           HandledRegs.insert(CanonicalReg);
 
-#if 0
-          errs() << debug_cur << " : " << MF.getName() << " : " << TRI->getRegAsmName(Reg) << " : "; MI.dump();
-#endif
-
           const auto *RegClass = TRI->getMinimalPhysRegClass(Reg);
 
-#if 0
           // Allocate new stack spill slot.
           // TODO: Can revert this to using 'official' methods.
-          const unsigned SpillSize = TRI->getRegSizeInBits(Reg, MRI);
-          const Align SpillAlign = Align(SpillSize);
-          const int FrameIndex = MFI.CreateSpillStackObject(SpillSize, SpillAlign);
-#else
           const unsigned SpillSize = TRI->getSpillSize(*RegClass);
           const Align SpillAlign = TRI->getSpillAlign(*RegClass);
           PrivateSpillInfo &PSI = *getSpillInfo(&MI);
@@ -424,7 +438,6 @@ bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86Priv
             PSI_it = PSI.emplace(Reg, FrameIndex).first;
           }
           const int FrameIndex = PSI_it->second;
-#endif
 
           // Store to spill slot before call.
           if (!MI.isReturn()) {
@@ -444,14 +457,17 @@ bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86Priv
 
             // Insert zero instruction.
             const Register SubReg = getX86SubSuperRegister(Reg, 32);
-            MachineInstr *ZeroMI = BuildMI(MBB, PreMBBI, DebugLoc(), TII->get(X86::MOV32r0), SubReg).getInstr();
+            MachineInstr *ZeroMI = BuildMI(MBB, PreMBBI, DebugLoc(), TII->get(X86::MOV32r0), SubReg)
+                                       .addDef(X86::EFLAGS, RegState::Implicit)
+                                       .getInstr();
               
             // Set in-privacy for ZeroMI (unchanged).
             PrivTys.getInstrPrivacyIn(ZeroMI) = CallPrivacyIn;
               
             // Mark register as now publicly-typed.
-            CallPrivacyIn.set(Reg, PubliclyTyped);
-              
+            // TODO: Create function to mark all outputs public.
+            CallPrivacyIn.markAllInstrOutsPublic(*ZeroMI);
+            
             // Set out-privacy for ZeroMI.
             PrivTys.getInstrPrivacyOut(ZeroMI) = CallPrivacyIn;
           }
@@ -517,7 +533,10 @@ std::optional<PrivacyType> X86::getInstrPrivacy(const MachineInstr &MI) {
 
 void X86::setInstrPrivacy(MachineInstr &MI, PrivacyType PrivTy) {
   const std::optional<PrivacyType> OrigInstrTy = getInstrPrivacy(MI);
-  assert(!(OrigInstrTy && *OrigInstrTy != PrivTy) && "Attempting to change instruction privacy type!");
+  assert(!(OrigInstrTy == PubliclyTyped && PrivTy == PrivatelyTyped) &&
+         "Attempting to change instruction privacy from public to private!");
+  if (OrigInstrTy)
+    MI.clearFlag(MachineInstr::TPEPrivM);
   switch (PrivTy) {
   case PubliclyTyped:
     MI.setFlag(MachineInstr::TPEPubM);
@@ -530,55 +549,42 @@ void X86::setInstrPrivacy(MachineInstr &MI, PrivacyType PrivTy) {
   }
 }
 
+std::optional<PrivacyType> X86LLSCT::computeInstrPrivacy(MachineInstr &MI, X86PrivacyTypeAnalysis &PrivTys) {
+  SmallVector<const MachineOperand *, 2> OutRegs;
+  X86::getInstrDataOutputs(MI, OutRegs);
+
+  SmallVector<PrivacyType, 2> OutPrivs;
+  for (const MachineOperand *MO : OutRegs)
+    OutPrivs.push_back(PrivTys.getInstrPrivacyOut(&MI).get(MO->getReg()));
+
+  // If there are any output registers, use that
+  if (!OutPrivs.empty()) {
+    assert(llvm::all_equal(llvm::make_range(OutPrivs.begin(), OutPrivs.end())));
+    return OutPrivs[0];
+  }
+
+  // If the instruction has a load, then default to privately-typed.
+  if (MI.mayLoad()) {
+    std::optional<PrivacyType> InstrPrivacy = X86::getInstrPrivacy(MI);
+    if (!InstrPrivacy) {
+      InstrPrivacy = PrivatelyTyped;
+      LLVM_DEBUG(dbgs() << "Defaulting load with no output to privately-typed: " << MI);
+    }
+    return InstrPrivacy;
+  }
+
+  // Otherwise, no need to insert prefix.
+  LLVM_DEBUG(dbgs() << "Instruction does not require privacy type: " << MI);
+  return std::nullopt;
+}
+
 void X86LLSCT::addPrivacyPrefixes(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys) {
   for (MachineBasicBlock &MBB : MF) {
     for (MachineInstr &MI : MBB) {
-
-      // Control-flow instructions never get a PRIV prefix.
-      if (MI.isCall() || MI.isReturn() || MI.isBranch())
+      const std::optional<PrivacyType> InstrPrivTy = computeInstrPrivacy(MI, PrivTys);
+      if (!InstrPrivTy)
         continue;
-
-      // Stores don't get PRIV prefix.
-      if (MI.mayStore() && !MI.mayLoad())
-        continue;
-
-      // If the instruction has explicit or EFLAGS output registers, then use that for the
-      // instruction's privacy type.
-      
-      
-      SmallVector<PrivacyType> OutputPrivacies;
-      SmallVector<PrivacyType> InputPrivacies;
-      for (const MachineOperand &MO : MI.operands()) {
-        if (MO.isReg()) {
-          if (MO.isDef()) {
-            OutputPrivacies.push_back(PrivTys.getInstrPrivacyOut(&MI).get(MO.getReg()));
-          } else if (MO.isUse()) {
-            InputPrivacies.push_back(PrivTys.getInstrPrivacyIn(&MI).get(MO.getReg()));
-          } else {
-            llvm_unreachable("register operand is neither def nor use!");
-          }
-        }
-      }
-
-      const bool HasRegOut = !OutputPrivacies.empty();
-      const bool HasMemOut = MI.mayStore();
-      const bool HasRegIn = !InputPrivacies.empty();
-      const bool HasMemIn = MI.mayLoad();
-
-      if (HasRegOut) {
-        // If it has a 
-      }
-      
-      // Skip instructions with no outputs.
-      if (OutputPrivacies.empty())
-        continue;
-
-      // Skip non-arithmetic instructions?
-      if (MI.isCall())
-        continue;
-
-      assert(llvm::all_equal(llvm::make_range(OutputPrivacies.begin(), OutputPrivacies.end())));
-      X86::setInstrPrivacy(MI, OutputPrivacies[0]);
+      X86::setInstrPrivacy(MI, *InstrPrivTy);
     }
   }
 }

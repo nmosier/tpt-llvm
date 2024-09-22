@@ -51,6 +51,8 @@ public:
   Bitset getPublicBitset() const;
 
   static Bitset regmaskToBitset(const uint32_t *mask);
+
+  void markAllInstrOutsPublic(const MachineInstr &MI);
 };
 
 struct PrivacyNode {
@@ -62,7 +64,7 @@ int getMemRefBeginIdx(const MachineInstr &MI);
 
 }
 
-class X86PrivacyTypeAnalysis final : public MachineFunctionPass {
+class X86PrivacyTypeAnalysis {
 public:
   using PrivacyType = X86::PrivacyType;
   using PrivacyMask = X86::PrivacyMask;
@@ -70,17 +72,16 @@ public:
   
   static char ID;
 
-  X86PrivacyTypeAnalysis();
+  X86PrivacyTypeAnalysis(MachineFunction &MF) : MF(MF) {}
 
-  void getAnalysisUsage(AnalysisUsage& AU) const override;
-  MachineFunctionProperties getRequiredProperties() const override;
-  bool runOnMachineFunction(MachineFunction &F) override;
+  void run();
 
   using BasicBlockSet = llvm::SmallSet<MachineBasicBlock *, 2>;
   const BasicBlockSet &getBlockPredecessors(MachineBasicBlock *MBB);
   const BasicBlockSet &getBlockSuccessors(MachineBasicBlock *MBB);
 
 private:
+  MachineFunction &MF;
 
   template <typename T>
   using PrivacyTypes = std::unordered_map<T *, PrivacyNode>;
@@ -92,8 +93,6 @@ private:
   ControlFlowGraph BlockPredecessors;
 
   void addBlockEdge(MachineBasicBlock *Src, MachineBasicBlock *Dst);
-
-  void clear();
 
 public:
   PrivacyNode &getBlockPrivacy(MachineBasicBlock *MBB);
@@ -132,6 +131,8 @@ OutputIt PrivacyMask::getPublicRegs(OutputIt out) const {
 
 bool DumpCheckFilter(const MachineFunction &MF);
 ArrayRef<Register> getAlwaysPublicRegisters();
+void getInstrDataOutputs(const MachineInstr &MI, SmallVectorImpl<const MachineOperand *> &Outs);
+bool isPush(const MachineInstr &MI);
 
 }
 
