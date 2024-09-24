@@ -289,24 +289,60 @@ bool X86LLSCT::instrumentPublicCalleeReturnValues(MachineFunction &MF, X86Privac
   return Changed;
 }
 
+class PrivateSpillInfo {
+  std::map<Register, int> Map;
+
+  bool checkNoOverlaps(Register Reg, const TargetRegisterInfo *TRI) const;
+public:
+  int getOrAllocateSpillSlot(Register Reg, MachineFunction &MF);
+
+  auto begin() const { return Map.begin(); }
+  auto end() const { return Map.end(); }
+};
+
+bool PrivateSpillInfo::checkNoOverlaps(Register Reg, const TargetRegisterInfo *TRI) const {
+  for (const auto &[OtherReg, _] : Map) {
+    if (TRI->regsOverlap(Reg, OtherReg)) {
+      LLVM_DEBUG(dbgs() << "Register " << TRI->getRegAsmName(Reg)
+                 << " overlaps with " << TRI->getRegAsmName(OtherReg) << "\n");
+      return false;
+    }
+  }
+  return true;
+}
+  
+
+// TODO: Make MF class member, not function argument.
+int PrivateSpillInfo::getOrAllocateSpillSlot(Register Reg, MachineFunction &MF) {
+  // Try to retrieve existing spill slot.
+  {
+    const auto MapIt = Map.find(Reg);
+    if (MapIt != Map.end())
+      return MapIt->second;
+  }
+
+  const auto *TRI = MF.getSubtarget().getRegisterInfo();
+  MachineFrameInfo &MFI = MF.getFrameInfo();
+
+  // Otherwise, ensure no overlapping register has already been allocated.
+  assert(checkNoOverlaps(Reg, TRI) && "Found overlap!");
+
+  // Allocate new frame index.
+  const auto *RegClass = TRI->getMinimalPhysRegClass(Reg);
+  const unsigned SpillSize = TRI->getSpillSize(*RegClass);
+  const Align SpillAlign = TRI->getSpillAlign(*RegClass);
+  const int FrameIndex = MFI.CreateSpillStackObject(SpillSize, SpillAlign);
+  Map[Reg] = FrameIndex;
+  return FrameIndex;
+}
+
 bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys) {
   bool Changed = false;
-  MachineFrameInfo &MFI = MF.getFrameInfo();
   const auto *TII = MF.getSubtarget().getInstrInfo();
   const auto *TRI = MF.getSubtarget().getRegisterInfo();
 
   assert(MF.getRegInfo().tracksLiveness());
 
-#if 0
-  // Make sure we don't have any landingpads with more than one invoke-style call.
-  // NOTE: This is actually present in some programs.
-  for (const LandingPadInfo &LPI : MF.getLandingPads()) {
-    assert(LPI.BeginLabels.size() == 1);
-    assert(LPI.EndLabels.size() == 1);
-  }
-#endif
-
-  using PrivateSpillInfo = std::map<Register, int>;
   std::map<const LandingPadInfo *, PrivateSpillInfo> InvokePrivateSpillInfo;
   std::map<MachineInstr *, PrivateSpillInfo> CallPrivateSpillInfo;
 
@@ -337,14 +373,30 @@ bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86Priv
     }
   }
 
-  auto getSpillInfo = [&] (MachineInstr *MI) -> PrivateSpillInfo * {
+  auto getSpillInfo = [&] (MachineInstr *MI, Register Reg) -> PrivateSpillInfo * {
     const auto InvokeToLandingPadIt = InvokeToLandingPad.find(MI);
     if (InvokeToLandingPadIt == InvokeToLandingPad.end()) {
       // Regular call.
+      LLVM_DEBUG(dbgs() << "Call: " << *MI);
       return &CallPrivateSpillInfo[MI];
-    } else {
-      return &InvokePrivateSpillInfo[InvokeToLandingPadIt->second];
     }
+
+    // Invoke-style instruction.
+    // However, treat it as a call if the register isn't live at landingpad entry.
+
+    // Is the register live at the landingpad entry?
+    const LandingPadInfo *LPI = InvokeToLandingPadIt->second;
+    if (LPI->LandingPadBlock->isLiveIn(Reg)) {
+      return &InvokePrivateSpillInfo[LPI];
+    }
+
+    // Make sure no registers errantly overlap.
+    assert(llvm::none_of(LPI->LandingPadBlock->liveins(), [&] (const auto &p) -> bool {
+      return TRI->regsOverlap(p.PhysReg, Reg);
+    }));
+
+    // Treat as call.
+    return &CallPrivateSpillInfo[MI];
   };
 
   // DEBUG
@@ -367,8 +419,11 @@ bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86Priv
   for (MachineBasicBlock &MBB : MF) {
     LivePhysRegs LPR(*TRI);
     LPR.addLiveInsNoPristines(MBB);
+    
     for (MachineInstr &MI : MBB) {
       if (MI.isCall()) {
+        LLVM_DEBUG(dbgs() << __func__ << ": processing call: " << MI);
+        
         PrivacyMask &CallPrivacyIn = PrivTys.getInstrPrivacyIn(&MI);
         PrivacyMask &CallPrivacyOut = PrivTys.getInstrPrivacyOut(&MI);
         // Recall that the call's regmask marks which registers are preserved.
@@ -386,8 +441,6 @@ bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86Priv
         assert(RegMaskIt != MI.operands_end());
         const PrivacyMask::Bitset CalleeSavedRegs = PrivacyMask::regmaskToBitset(RegMaskIt->getRegMask());
         const PrivacyMask::Bitset PrivateCalleeSaves = (PrivateRegs & CalleeSavedRegs);
-        // TODO: Need canonical iterator over bitset.
-        llvm::SmallSet<Register, 4> HandledRegs;
         for (Register Reg : LPR) {
 
           // If the register has a live parent, then skip.
@@ -408,13 +461,7 @@ bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86Priv
           if (!PrivateCalleeSaves.test(CanonicalReg))
             continue;
 
-          // DEBUG
-          for (Register SuperReg : TRI->superregs(Reg)) {
-            errs() << "super(" << TRI->getRegAsmName(Reg) << "): " << TRI->getRegAsmName(SuperReg) << "\n";
-          }
-
           // We shouldn't've already handled it.
-          assert(!HandledRegs.contains(CanonicalReg));
 
 #if 0
           if (!(debug_min <= debug_cur && debug_cur <= debug_max)) {
@@ -423,21 +470,24 @@ bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86Priv
           }
 #endif
 
-          HandledRegs.insert(CanonicalReg);
-
           const auto *RegClass = TRI->getMinimalPhysRegClass(Reg);
 
-          // Allocate new stack spill slot.
-          // TODO: Can revert this to using 'official' methods.
-          const unsigned SpillSize = TRI->getSpillSize(*RegClass);
-          const Align SpillAlign = TRI->getSpillAlign(*RegClass);
-          PrivateSpillInfo &PSI = *getSpillInfo(&MI);
-          auto PSI_it = PSI.find(Reg);
-          if (PSI_it == PSI.end()) {
-            const int FrameIndex = MFI.CreateSpillStackObject(SpillSize, SpillAlign);
-            PSI_it = PSI.emplace(Reg, FrameIndex).first;
+          static const TargetRegisterClass *GoldenRCs[] = {
+            &X86::GR8RegClass, &X86::GR16RegClass, &X86::GR32RegClass, &X86::GR64RegClass,
+          };
+          if (llvm::none_of(GoldenRCs, [&] (const TargetRegisterClass *GoldenRC) -> bool {
+            return GoldenRC->hasSubClassEq(RegClass);
+          })) {
+            LLVM_DEBUG(dbgs() << "Not spilling private callee-saved register "
+                       "because it has an unsupported register class: " << TRI->getRegAsmName(Reg) << "\n");
+            continue;
           }
-          const int FrameIndex = PSI_it->second;
+
+          LLVM_DEBUG(dbgs() << "Spilling private callee-saved register " << TRI->getRegAsmName(Reg) << "\n");
+
+          // Allocate new stack spill slot.
+          PrivateSpillInfo &PSI = *getSpillInfo(&MI, Reg);
+          const int FrameIndex = PSI.getOrAllocateSpillSlot(Reg, MF);
 
           // Store to spill slot before call.
           if (!MI.isReturn()) {
