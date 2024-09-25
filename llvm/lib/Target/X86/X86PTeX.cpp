@@ -198,7 +198,6 @@ bool X86LLSCT::instrumentPublicArguments(MachineFunction &MF, X86PrivacyTypeAnal
   auto MBBI = MBB.begin();
   const PrivacyMask &Privacy = PrivTys.getBlockPrivacyIn(&MBB);
   const auto *TII = MF.getSubtarget().getInstrInfo();
-  const auto *TRI = MF.getSubtarget().getRegisterInfo();
   const MachineRegisterInfo &MRI = MF.getRegInfo();
 
   auto IsCalleeSaved = [&] (Register Reg) -> bool {
@@ -263,7 +262,7 @@ bool X86LLSCT::instrumentPublicCalleeReturnValues(MachineFunction &MF, X86Privac
         const auto NewMBBI_end = NewMBBI_begin();
         llvm::SmallSet<Register, 1> ReturnRegs; // So we don't protect any registers twice.
         for (const MachineOperand &MO : MI.operands()) {
-          if (MO.isReg() && MO.isDef()) {
+          if (MO.isReg() && MO.isDef() && !MO.isDead()) {
             const Register Reg = MO.getReg();
             if (!X86::registerIsAlwaysPublic(Reg) && Privacy.get(Reg) == X86::PubliclyTyped) {
               if (ReturnRegs.insert(Reg).second) {
@@ -576,7 +575,7 @@ std::optional<PrivacyType> X86::getInstrPrivacy(const MachineInstr &MI) {
   } else if (!Pub && !Priv) {
     return std::nullopt;
   } else {
-    MI.dump();
+    MI.print(errs());
     llvm_unreachable("both pub and priv are set for machine instr!");
   }
 }
