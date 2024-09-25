@@ -12,6 +12,7 @@ namespace llvm::X86 {
 enum PrivacyType : uint8_t;
 
 bool EnablePTeX();
+extern cl::opt<bool> PrefixProtectedStores;
 std::optional<PrivacyType> getInstrPrivacy(const MachineInstr &MI);
 void setInstrPrivacy(MachineInstr &MI, PrivacyType PrivTy);
 

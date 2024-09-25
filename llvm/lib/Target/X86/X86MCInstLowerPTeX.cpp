@@ -28,10 +28,17 @@ static bool shouldConsiderInstructionForPrefix(const MachineInstr &MI) {
 
   SmallVector<const MachineOperand *, 2> OutRegs;
   X86::getInstrDataOutputs(MI, OutRegs);
-  if (OutRegs.empty() && !MI.mayLoad())
-    return false;
 
-  return true;
+  if (!OutRegs.empty())
+    return true;
+
+  if (MI.mayLoad())
+    return true;
+
+  if (PrefixProtectedStores && MI.mayStore())
+    return true;
+
+  return false;
 }
 
 // PTEX-TODO: Rename function.

@@ -46,6 +46,13 @@ static cl::opt<bool> EnablePTeXDump {
   cl::Hidden,
 };
 
+cl::opt<bool> PrefixProtectedStores {
+  PASS_KEY "-stores",
+  cl::desc("Add PROT prefix for stores"),
+  cl::init(false),
+  cl::Hidden,
+};
+
 bool EnablePTeX() {
   return static_cast<bool>(EnablePTeXOpt);
 }
@@ -599,6 +606,10 @@ void X86::setInstrPrivacy(MachineInstr &MI, PrivacyType PrivTy) {
 }
 
 std::optional<PrivacyType> X86LLSCT::computeInstrPrivacy(MachineInstr &MI, X86PrivacyTypeAnalysis &PrivTys) {
+  // Calls never get privacy prefixes.
+  if (MI.isCall())
+    return std::nullopt;
+  
   SmallVector<const MachineOperand *, 2> OutRegs;
   X86::getInstrDataOutputs(MI, OutRegs);
 
@@ -620,6 +631,21 @@ std::optional<PrivacyType> X86LLSCT::computeInstrPrivacy(MachineInstr &MI, X86Pr
       LLVM_DEBUG(dbgs() << "Defaulting load with no output to privately-typed: " << MI);
     }
     return InstrPrivacy;
+  }
+
+  // Check if we're inserting protection prefixes for stores.
+  if (X86::PrefixProtectedStores && MI.mayStore()) {
+    std::optional<PrivacyType> InstrPrivacy = X86::getInstrPrivacy(MI);
+    if (InstrPrivacy) {
+      LLVM_DEBUG(dbgs() << "Store has explicit privacy " << (int) *InstrPrivacy << ": " << MI);
+      return InstrPrivacy;
+    } else {
+      for (const MachineOperand &MO : MI.operands())
+        if (MO.isReg() && MO.isUse() && !MO.isUndef() &&
+            PrivTys.getInstrPrivacyIn(&MI).get(MO.getReg()) == PrivatelyTyped)
+          return PrivatelyTyped;
+      return PubliclyTyped;
+    }
   }
 
   // Otherwise, no need to insert prefix.
