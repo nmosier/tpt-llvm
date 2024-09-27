@@ -26,6 +26,10 @@ static bool shouldConsiderInstructionForPrefix(const MachineInstr &MI) {
   if (!EnablePTeX())
     return false;
 
+  // PTEX-TODO: Need to unify.
+  if (MI.isCall())
+    return false;
+
   SmallVector<const MachineOperand *, 2> OutRegs;
   X86::getInstrDataOutputs(MI, OutRegs);
 

@@ -206,6 +206,7 @@ bool X86LLSCT::instrumentPublicArguments(MachineFunction &MF, X86PrivacyTypeAnal
   const PrivacyMask &Privacy = PrivTys.getBlockPrivacyIn(&MBB);
   const auto *TII = MF.getSubtarget().getInstrInfo();
   const MachineRegisterInfo &MRI = MF.getRegInfo();
+  [[maybe_unused]] const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
 
   auto IsCalleeSaved = [&] (Register Reg) -> bool {
     for (const auto *CSR = MRI.getCalleeSavedRegs(); *CSR != X86::NoRegister; ++CSR) {

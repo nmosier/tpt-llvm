@@ -25,7 +25,10 @@ endif()
 
 add_public_tablegen_target(X86CommonTableGen)
 
-# add_compile_options(-g -O0)
+set(LLVM_X86_DEBUG OFF CACHE BOOL "Build X86 backend in debug mode")
+if (LLVM_X86_DEBUG)
+  add_compile_options(-g -O0)
+endif()
 
 set(sources
   X86AsmPrinter.cpp
