@@ -105,6 +105,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeX86Target() {
   initializeX86ReturnThunksPass(PR);
   initializeX86DAGToDAGISelPass(PR);
   initializeX86LLSCTPass(PR);
+  initializeX86AnnotatePointersPass(PR);
 }
 
 static std::unique_ptr<TargetLoweringObjectFile> createTLOF(const Triple &TT) {
@@ -554,6 +555,7 @@ void X86PassConfig::addPostRegAlloc() {
 
   // PTeX: Stage 1.
   addPass(createX86LLSCTPass(/*Instrument*/true));
+  addPass(createX86AnnotatePointersPass());
 }
 
 void X86PassConfig::addPreSched2() {

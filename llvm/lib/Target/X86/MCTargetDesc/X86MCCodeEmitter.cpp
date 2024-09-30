@@ -1270,6 +1270,10 @@ bool X86MCCodeEmitter::emitOpcodePrefix(int MemOperand, const MCInst &MI,
   if (MI.getFlags() & X86::IP_TPE_PRIVM) {
     emitByte(0x36, OS);
   }
+
+  if (MI.getFlags() & X86::IP_USE_DS) {
+    emitByte(0x3E, OS);
+  }
   
   // Emit the operand size opcode prefix as needed.
   if ((TSFlags & X86II::OpSizeMask) ==

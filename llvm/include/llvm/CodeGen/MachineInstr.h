@@ -117,6 +117,7 @@ public:
     TPEPubM      = 1 << 17,             // Indicates that this access is publicly
                                         // typed. Absence of PRIVM or PUBM
                                         // means the type is undetermined.
+    AnnotatePointerLoad = 1 << 18,      // This is a pointer load (annotation).
   };
 
 private:

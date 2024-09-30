@@ -67,10 +67,8 @@ namespace X86 {
     IP_USE_EVEX =      1U << 9,
     IP_USE_DISP8 =     1U << 10,
     IP_USE_DISP32 =    1U << 11,
-    IP_HAS_NOSPEC =    1U << 12,
-    IP_HAS_SSBD =      1U << 13,
-    IP_HAS_INDADDR =   1U << 14,
-    IP_TPE_PRIVM =     1U << 15,
+    IP_TPE_PRIVM =     1U << 12, // PTEX-TODO: Rename.
+    IP_USE_DS =        1U << 13,
   };
 
   enum OperandType : unsigned {

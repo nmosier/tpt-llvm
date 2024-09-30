@@ -45,8 +45,16 @@ static bool shouldConsiderInstructionForPrefix(const MachineInstr &MI) {
   return false;
 }
 
+static void annotate(const MachineInstr *MI, MCInst& OutMI) {
+  if (MI->getFlag(MachineInstr::AnnotatePointerLoad)) {
+    OutMI.setFlags(X86::IP_USE_DS);
+  }
+}
+
 // PTEX-TODO: Rename function.
 void X86MCInstLowerTPE(const MachineInstr *MI, MCInst& OutMI) {
+  annotate(MI, OutMI);
+
   if (!shouldConsiderInstructionForPrefix(*MI))
     return;
   
