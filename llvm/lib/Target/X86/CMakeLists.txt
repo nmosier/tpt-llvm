@@ -98,7 +98,7 @@ set(sources
   X86AnnotatePointers.cpp
   X86LLSCTUtil.cpp # PTEX-TODO: Consolidate.
   X86PrivacyTypeAnalysis.cpp
-  X86ReturnHardening.cpp
+  X86ReturnHardening.cpp # PTEX-TODO: Remove.
   )
 
 add_llvm_target(X86CodeGen ${sources}
