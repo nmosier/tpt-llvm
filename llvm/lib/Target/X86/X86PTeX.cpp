@@ -117,11 +117,6 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
     errs() << "===========================================\n";
   }
 
-#if 0
-  // Step 1: Unfold all load memory operands.
-  Changed |= unfoldLoads(MF);
-#endif
- 
   // Step 1: Infer privacy types for the function.
   X86PrivacyTypeAnalysis PrivacyTypes(MF);
   PrivacyTypes.run();
