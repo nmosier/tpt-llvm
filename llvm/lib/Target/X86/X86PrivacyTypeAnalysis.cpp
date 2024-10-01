@@ -10,6 +10,7 @@
 #include "X86PTeX.h"
 
 #define PASS_KEY "x86-privacy-types"
+#define DEBUG_TYPE "x86-ptex"
 
 using namespace llvm;
 
@@ -399,6 +400,9 @@ static bool isArithInstr(const MachineInstr &MI) {
 #endif
 
 void X86PrivacyTypeAnalysis::run() {
+  [[maybe_unused]] const TargetInstrInfo *TII = MF.getSubtarget().getInstrInfo();
+  [[maybe_unused]] const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+
   // PTEX-TODO: Split these out into different functions.
 
   // PART I: Compute block-level control-flow graph.
@@ -538,6 +542,45 @@ void X86PrivacyTypeAnalysis::run() {
     errs() << "===== Privacy Types (Partial, After Frame-Setup/Destroy) =====\n";
     dumpResults(errs(), MF);
     errs() << "==============================================================\n";
+  }
+
+  // Step 5: Mark all pointer call arguments public.
+  {
+    const auto &CSI = MF.getCallSitesInfo();
+    for (MachineBasicBlock &MBB : MF) {
+      for (MachineInstr &MI : MBB) {
+        if (!MI.isCall())
+          continue;
+        const auto it = CSI.find(&MI);
+        if (it == CSI.end()) {
+          LLVM_DEBUG(dbgs() << "Call has no callsite info, skipping: " << MI);
+          continue;
+        }
+        const MachineOperand &CalleeMO = TII->getCalleeOperand(MI);
+        if (!CalleeMO.isGlobal()) {
+          LLVM_DEBUG(dbgs() << "Callee operand is not global, skipping: " << MI);
+          continue;
+        }
+        const Function *CalleeFunc = dyn_cast<Function>(CalleeMO.getGlobal());
+        if (!CalleeFunc) {
+          LLVM_DEBUG(dbgs() << "Skipping non-function callee: " << MI);
+          continue;
+        }
+        const auto &ArgRegPairs = it->second.ArgRegPairs;
+        if (CalleeFunc->isVarArg()) {
+          LLVM_DEBUG(dbgs() << "Skipping variadic function call: " << MI);
+          continue;
+        }
+        for (const auto &Pair : ArgRegPairs) {
+          const Argument *Arg = CalleeFunc->getArg(Pair.ArgNo);
+          if (Arg->getType()->isPointerTy()) {
+            getInstrPrivacyIn(&MI).set(Pair.Reg, PubliclyTyped);
+            LLVM_DEBUG(dbgs() << "Marked argument " << Pair.ArgNo << " (register "
+                       << TRI->getRegAsmName(Pair.Reg) << ") public: " << MI);
+          }
+        }
+      }
+    }
   }
 
   // TODO: Should merge all into same MBB.
