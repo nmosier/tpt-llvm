@@ -9,8 +9,8 @@
 #include "llvm/Support/WithColor.h"
 #include "X86PTeX.h"
 
-#define PASS_KEY "x86-privacy-types"
-#define DEBUG_TYPE "x86-ptex"
+#define PASS_KEY "x86-privty"
+#define DEBUG_TYPE PASS_KEY
 
 using namespace llvm;
 
@@ -25,8 +25,6 @@ using X86::PubliclyTyped;
 // [ ] Print out both outs and ins back-to-back if they differ.
 // [ ] Label instr-ins, etc.
 // [ ] Option to colorize printouts. Color newly public instructions green; color now missing instructions red.
-
-char X86PrivacyTypeAnalysis::ID = 0;
 
 static llvm::cl::opt<bool> DumpResultsOpt {
   PASS_KEY "-dump",
@@ -54,6 +52,13 @@ static llvm::cl::opt<std::string> DumpFilter {
   PASS_KEY "-dump-filter",
   cl::desc("Only dump given functions, as comma-separated list"),
   cl::init(""),
+  cl::Hidden,
+};
+
+static cl::opt<bool> FutureLeakage {
+  PASS_KEY "-future-only",
+  cl::desc("[PTeX] Only mark data public if it'll leak in the future along all control-flow paths"),
+  cl::init(false), // PTEX-TODO: Change this if we commit to it.
   cl::Hidden,
 };
 
@@ -630,9 +635,21 @@ void X86PrivacyTypeAnalysis::run() {
     for (MachineBasicBlock &MBB : MF) {
 
       // STEP II-A-1: Block-level backward meet.
-      for (MachineBasicBlock *SuccMBB : getBlockSuccessors(&MBB)) {
-        Changed |= getBlockPrivacyOut(&MBB).inheritPublic(getBlockPrivacyIn(SuccMBB), DiffPtr);
-        PrintDiff("bwd-block-out", MBB);
+      if (FutureLeakage) {
+        const auto &succs = getBlockSuccessors(&MBB);
+        if (!succs.empty()) {
+          auto succ_it = succs.begin();
+          PrivacyMask Privacy = getBlockPrivacyIn(*succ_it++);
+          while (succ_it != succs.end())
+            Privacy.inheritPrivate(getBlockPrivacyIn(*succ_it++));
+          Changed |= getBlockPrivacyOut(&MBB).inheritPublic(Privacy, DiffPtr);
+        }
+      } else {
+        // Register is out-typed public iff it's in-typed public along any future control-flow paths.
+        for (MachineBasicBlock *SuccMBB : getBlockSuccessors(&MBB)) {
+          Changed |= getBlockPrivacyOut(&MBB).inheritPublic(getBlockPrivacyIn(SuccMBB), DiffPtr);
+          PrintDiff("bwd-block-out", MBB);
+        }
       }
 
       // STEP II-A-2: Step backwards through basic block.

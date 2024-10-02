@@ -70,8 +70,6 @@ public:
   using PrivacyMask = X86::PrivacyMask;
   using PrivacyNode = X86::PrivacyNode;
   
-  static char ID;
-
   X86PrivacyTypeAnalysis(MachineFunction &MF) : MF(MF) {}
 
   void run();
