@@ -7,9 +7,11 @@
 #include "llvm/CodeGen/MachineMemOperand.h"
 #include "llvm/Support/CommandLine.h"
 
-namespace llvm::X86 {
+namespace llvm {
 
 enum PrivacyType : uint8_t;
+
+namespace X86 {
 
 bool EnablePTeX();
 extern cl::opt<bool> PrefixProtectedStores;
@@ -18,5 +20,4 @@ void setInstrPrivacy(MachineInstr &MI, PrivacyType PrivTy);
 
 }
 
-
-
+}

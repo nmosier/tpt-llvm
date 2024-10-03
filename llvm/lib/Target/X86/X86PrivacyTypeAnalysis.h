@@ -12,12 +12,12 @@
 
 namespace llvm {
 
-namespace X86 {
-
 enum PrivacyType : uint8_t {
   PrivatelyTyped,
   PubliclyTyped,
 };
+
+namespace X86 {
 
 class PrivacyMask {
 public:
@@ -66,7 +66,6 @@ int getMemRefBeginIdx(const MachineInstr &MI);
 
 class X86PrivacyTypeAnalysis {
 public:
-  using PrivacyType = X86::PrivacyType;
   using PrivacyMask = X86::PrivacyMask;
   using PrivacyNode = X86::PrivacyNode;
   

@@ -14,11 +14,8 @@
 
 using namespace llvm;
 
-using X86::PrivacyType;
 using X86::PrivacyMask;
 using X86::PrivacyNode;
-using X86::PrivatelyTyped;
-using X86::PubliclyTyped;
 
 // TODO LIST:
 // [ ] Don't print out always-public registers in list.

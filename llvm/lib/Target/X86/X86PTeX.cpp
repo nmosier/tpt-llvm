@@ -17,15 +17,13 @@
 #include "llvm/IR/Value.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "X86PrivacyTypeAnalysis.h"
+#include "X86PrivacyTypeAnalysis2.h"
 
 #define PTEX_DEBUG 1
 
 using namespace llvm;
 
 using X86::PrivacyMask;
-using X86::PrivacyType;
-using X86::PubliclyTyped;
-using X86::PrivatelyTyped;
 
 #define PASS_KEY "x86-ptex"
 #define DEBUG_TYPE PASS_KEY
@@ -113,6 +111,16 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
     
   if (!X86::EnablePTeX())
     return false;
+
+  annotateVirtualPointers(MF);
+  if (s == "llt")
+    return false;
+
+  X86::PrivacyTypeAnalysis PTA(MF);
+  PTA.run();
+  if (X86::DumpPTeX(MF))
+    PTA.print(errs());
+  return false;
 
   if (s == "llt") {
     annotateVirtualPointers(MF);
@@ -285,7 +293,7 @@ bool X86LLSCT::instrumentPublicCalleeReturnValues(MachineFunction &MF, X86Privac
         for (const MachineOperand &MO : MI.operands()) {
           if (MO.isReg() && MO.isDef() && !MO.isDead()) {
             const Register Reg = MO.getReg();
-            if (!X86::registerIsAlwaysPublic(Reg) && Privacy.get(Reg) == X86::PubliclyTyped) {
+            if (!X86::registerIsAlwaysPublic(Reg) && Privacy.get(Reg) == PubliclyTyped) {
               if (ReturnRegs.insert(Reg).second) {
                 // The callee's return value is publicly-typed.
                 TII->copyPhysReg(MBB, NewMBBI_end, DebugLoc(), Reg, Reg, /*KillSrc*/true);
@@ -811,15 +819,14 @@ void X86LLSCT::annotateVirtualPointers(MachineFunction &MF) {
   const MachineRegisterInfo &MRI = MF.getRegInfo();
   for (MachineBasicBlock &MBB : MF) {
     for (MachineInstr &MI : MBB) {
-      const auto MOAccessesPointerAsData = [&] (const MachineOperand &MO) -> bool {
-        return MO.isReg() && !MO.isImplicit() && MRI.getType(MO.getReg()).isPointer() &&
-            (MO.isDef() || (MO.isUse() && !MI.mayLoadOrStore()));
-      };
-      const bool AccessesPointerAsData = llvm::any_of(MI.operands(), MOAccessesPointerAsData);
-      if (AccessesPointerAsData) {
-        // Mark instruction public.
-        X86::setInstrPrivacy(MI, PubliclyTyped);
-        LLVM_DEBUG(dbgs() << "PTeX.LLT: marking instruction public: " << MI);
+      for (MachineOperand &MO : MI.operands()) {
+        // PTEX-FIXME: MI.mayLoadOrStore() is too aggressive.
+        // We do care about stores that have a pointer operand.
+        if (MO.isReg() && !MO.isImplicit() && MRI.getType(MO.getReg()).isPointer() &&
+            (MO.isDef() || (MO.isUse() && !MI.mayLoadOrStore()))) {
+          MO.setIsPublic();
+          LLVM_DEBUG(dbgs() << "PTeX.LLT: marking instruction operand '" << MO << "' public: " << MI);
+        }
       }
     }
   }
