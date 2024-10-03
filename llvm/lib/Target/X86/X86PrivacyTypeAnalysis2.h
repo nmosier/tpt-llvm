@@ -7,6 +7,7 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
+#include "llvm/ADT/PostOrderIterator.h"
 
 namespace llvm {
 
@@ -86,6 +87,7 @@ private:
   bool backward();
 };
 
+template <class Base>
 class DirectionalPrivacyTypeAnalysis {
 protected:
   using PubMap = PrivacyTypeAnalysis::PubMap;
@@ -117,12 +119,16 @@ protected:
 
 private:
   void mergeIntoParent();
+
+  const Base *base() const { return static_cast<const Base *>(this); }
+  Base *base() { return static_cast<Base *>(this); }
 };
 
 // TODO: Make abstract class, 'UnidirectionalPrivacyTypeAnalysis'.
 // Then have two concerete subclasses: ForwardPrivacyTypeAnalysis,
 // BackwardPrivacyTypeAnalysis.
-class ForwardPrivacyTypeAnalysis final : public DirectionalPrivacyTypeAnalysis {
+class ForwardPrivacyTypeAnalysis final : public DirectionalPrivacyTypeAnalysis<ForwardPrivacyTypeAnalysis> {
+  friend class DirectionalPrivacyTypeAnalysis<ForwardPrivacyTypeAnalysis>;
   void init() override;
   bool block(MachineBasicBlock &MBB) override;
   bool instruction(MachineInstr &MI, PublicPhysRegs &PubRegs);
@@ -131,17 +137,23 @@ class ForwardPrivacyTypeAnalysis final : public DirectionalPrivacyTypeAnalysis {
 public:
   ForwardPrivacyTypeAnalysis(MachineFunction &MF, PubMap &ParentIn, PubMap &ParentOut) :
       DirectionalPrivacyTypeAnalysis(MF, ParentIn, ParentOut) {}
+
+protected:
+  auto blocks() const { return llvm::inverse_post_order(&MF); }
 };
 
-class BackwardPrivacyTypeAnalysis final : public DirectionalPrivacyTypeAnalysis {
+class BackwardPrivacyTypeAnalysis final : public DirectionalPrivacyTypeAnalysis<BackwardPrivacyTypeAnalysis> {
+  friend class DirectionalPrivacyTypeAnalysis<BackwardPrivacyTypeAnalysis>;
   void init() override;
   bool block(MachineBasicBlock &MBB) override;
   bool instruction(MachineInstr &MI, PublicPhysRegs &PubRegs);
   bool dataDefsPublic(const MachineInstr &MI) const; // TODO: Make this static instead.
-
+  auto blocks() const { return llvm::post_order(&MF); }
+  
 public:
   BackwardPrivacyTypeAnalysis(MachineFunction &MF, PubMap &ParentIn, PubMap &ParentOut) :
       DirectionalPrivacyTypeAnalysis(MF, ParentIn, ParentOut) {}
+
 };
 
 

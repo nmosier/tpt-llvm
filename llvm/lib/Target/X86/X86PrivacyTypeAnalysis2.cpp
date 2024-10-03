@@ -471,22 +471,24 @@ bool BackwardPrivacyTypeAnalysis::instruction(MachineInstr &MI, PublicPhysRegs &
   return Changed;
 }
 
-void DirectionalPrivacyTypeAnalysis::mergeIntoParent() {
+template <class Base>
+void DirectionalPrivacyTypeAnalysis<Base>::mergeIntoParent() {
   for (MachineBasicBlock &MBB : MF) {
     ParentChanged |= ParentIn[&MBB].addRegs(In[&MBB]);
     ParentChanged |= ParentOut[&MBB].addRegs(Out[&MBB]);
   }
 }
 
-bool DirectionalPrivacyTypeAnalysis::run() {
+template <class Base>
+bool DirectionalPrivacyTypeAnalysis<Base>::run() {
   init();
 
   bool IterChanged;
   unsigned IterCount = 0;
   do {
     IterChanged = false;
-    for (MachineBasicBlock &MBB : MF)
-      IterChanged |= block(MBB);
+    for (MachineBasicBlock *MBB : base()->blocks())
+      IterChanged |= block(*MBB);
     ++IterCount;
   } while (IterChanged);
 
