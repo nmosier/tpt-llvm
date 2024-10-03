@@ -490,8 +490,6 @@ void X86PrivacyTypeAnalysis::run() {
             getInstrPrivacyIn(&MI).set(Reg, PubliclyTyped);
           } else if (MO.isDef() && !MI.isCall()) {
             getInstrPrivacyOut(&MI).set(Reg, PubliclyTyped);
-          } else {
-            llvm_unreachable("Register operand is neither use nor def!");
           }
         }
       }

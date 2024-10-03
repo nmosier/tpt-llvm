@@ -53,11 +53,6 @@ namespace {
 
     bool runOnMachineFunction(MachineFunction &MF) override {
       ++NumFunctionsVisited;
-      // No matter what happened, whether we successfully selected the function
-      // or not, nothing is going to use the vreg types after us. Make sure they
-      // disappear.
-      auto ClearVRegTypesOnReturn =
-          make_scope_exit([&MF]() { MF.getRegInfo().clearVirtRegTypes(); });
 
       if (MF.getProperties().hasProperty(
               MachineFunctionProperties::Property::FailedISel)) {
@@ -73,8 +68,12 @@ namespace {
           DiagnosticInfoISelFallback DiagFallback(F);
           F.getContext().diagnose(DiagFallback);
         }
+
+        // MF.getRegInfo().clearVirtRegTypes();
+        
         return true;
       }
+      LLVM_DEBUG(dbgs() << "SucceededISeL: " << MF.getName() << "\n");
       return false;
     }
 

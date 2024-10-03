@@ -71,7 +71,10 @@ namespace {
 class X86LLSCT final : public MachineFunctionPass {
 public:
   static char ID;
-  X86LLSCT(bool Instrument) : MachineFunctionPass(ID), Instrument(Instrument) {}
+  X86LLSCT(const char *s) : MachineFunctionPass(ID) {
+    if (s)
+      this->s = s;
+  }
 
   void getAnalysisUsage(AnalysisUsage& AU) const override {
     AU.setPreservesCFG();
@@ -81,7 +84,7 @@ public:
   bool runOnMachineFunction(MachineFunction& MF) override;
 
 private:
-  bool Instrument;
+  std::string s;
   
   // Ensures that register types only transition from private->public
   // if the register is the output of an instruction.
@@ -95,8 +98,10 @@ private:
   [[nodiscard]] bool instrumentPublicArguments(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
   [[nodiscard]] bool instrumentPublicCalleeReturnValues(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
   [[nodiscard]] bool eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
+  [[nodiscard]] bool avoidPartialUpdatesOfPrivateEFLAGS(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
   void addPrivacyPrefixes(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
   std::optional<PrivacyType> computeInstrPrivacy(MachineInstr &MI, X86PrivacyTypeAnalysis &PrivTys);
+  void annotateVirtualPointers(MachineFunction &MF);
 };
 
 }
@@ -104,19 +109,29 @@ private:
 char X86LLSCT::ID = 0;
 
 bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
-  MF.verify();
-  
+  LLVM_DEBUG(dbgs() << "===== " << getPassName() << " on " << MF.getName() << " =====\n");
+    
   if (!X86::EnablePTeX())
     return false;
 
-  bool Changed = false;
+  if (s == "llt") {
+    annotateVirtualPointers(MF);
+    return false;
+  }  
 
+  MF.verify();
+  
   if (X86::DumpPTeX(MF)) {
     errs() << "===== X86PTeX BEFORE: " << MF.getName() << " =====\n";
     MF.print(errs());
     errs() << "===========================================\n";
   }
 
+  assert(s == "privty" || s == "instrument");
+  const bool Instrument = (s == "instrument");
+
+  bool Changed = false;
+  
   // Step 1: Infer privacy types for the function.
   X86PrivacyTypeAnalysis PrivacyTypes(MF);
   PrivacyTypes.run();
@@ -164,6 +179,9 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
     // Step 4: Eliminate all privately-typed callee-saved registers.
     if (!skip("CSRS"))
       Changed |= eliminatePrivateCalleeSavedRegisters(MF, PrivacyTypes);
+
+    // Step 5: Heuristically avoid partial updates of privately-typed EFLAGS.
+    Changed |= avoidPartialUpdatesOfPrivateEFLAGS(MF, PrivacyTypes);
   }
 
   // Mark instructions as public/private.
@@ -361,10 +379,27 @@ bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86Priv
     }
   }
 
+  auto HasLabel = [&] (const MCSymbol *Sym) -> bool {
+    return Labels.count(Sym) > 0;
+  };
+  auto IsPhantomLPI = [&] (const LandingPadInfo &LPI) -> bool {
+    const bool NotPhantom = HasLabel(LPI.LandingPadLabel);
+    for (const MCSymbol *BeginLabel : LPI.BeginLabels)
+      assert(HasLabel(BeginLabel) == NotPhantom);
+    for (const MCSymbol *EndLabel : LPI.EndLabels)
+      assert(HasLabel(EndLabel) == NotPhantom);
+    return !NotPhantom;
+  };
+
   // Precompute invokes.
   std::map<MachineInstr *, const LandingPadInfo *> InvokeToLandingPad;
   for (const LandingPadInfo &LPI : MF.getLandingPads()) {
     assert(LPI.BeginLabels.size() == LPI.EndLabels.size());
+
+    // Skip over any phantom LPIs.
+    if (IsPhantomLPI(LPI))
+      continue;
+
     for (const auto &[BeginLabel, EndLabel] : llvm::zip_equal(LPI.BeginLabels, LPI.EndLabels)) {
       const auto BeginMBBI = std::next(Labels.at(BeginLabel)->getIterator());
       const auto EndMBBI = Labels.at(EndLabel)->getIterator();
@@ -567,6 +602,79 @@ bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86Priv
   return Changed;
 }
 
+bool X86LLSCT::avoidPartialUpdatesOfPrivateEFLAGS(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys) {
+  bool Changed = false;
+
+  const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+  const X86InstrInfo *TII = MF.getSubtarget<X86Subtarget>().getInstrInfo();
+
+  // We'll just do this on an intra-block basis.
+  // If privately-typed EFLAGS are live across multiple blocks, god help us.
+  // (Actually, it's fine for security, just not performance.)
+  for (MachineBasicBlock &MBB : MF) {
+    LivePhysRegs LPR(*TRI);
+    LPR.addLiveIns(MBB);
+    for (MachineInstr &MI : MBB) {
+#if 0
+      // We insert a dummy no-op to reset private EFLAGS if:
+      //   i.   the EFLAGS are private before MI (duh)
+      //   ii.  EFLAGS is not live before MI
+      //   iii. MI defs EFLAGS
+      //   iv.  MI partially updates EFLAGS
+      const bool EFLAGSPrivateIn = (PrivTys.getInstrPrivacyIn(&MI).get(X86::EFLAGS) == PrivatelyTyped);
+      const bool EFLAGSPrivateOut = (PrivTys.getInstrPrivacyOut(&MI).get(X86::EFLAGS) == PrivatelyTyped);
+      const bool EFLAGSLiveIn = LPR.contains(X86::EFLAGS);
+      SmallVector<std::pair<MCPhysReg, const MachineOperand *>> Clobbers;
+      LPR.stepForward(MI, Clobbers);
+      const bool EFLAGSDef = llvm::count_if(Clobbers, [] (const auto &Pair) -> bool {
+        return Pair.first == X86::EFLAGS;
+      }) > 0;
+      if (EFLAGSPrivateIn && !EFLAGSPrivateOut && !EFLAGSLiveIn && EFLAGSDef && TII->partiallyUpdatesEFLAGS(MI)) {
+        MachineInstr *ZeroFlagsMI = BuildMI(MBB, MI.getIterator(), DebugLoc(), TII->get(X86::OR32rr), X86::ESP)
+                                        .addReg(X86::ESP)
+                                        .addReg(X86::ESP)
+                                        .getInstr();
+        auto &Privacy = PrivTys.getInstrPrivacyIn(&MI);
+        PrivTys.getInstrPrivacyIn(ZeroFlagsMI) = Privacy;
+        Privacy.set(X86::EFLAGS, PubliclyTyped);
+        PrivTys.getInstrPrivacyOut(ZeroFlagsMI) = Privacy;
+        Changed = true;
+        LLVM_DEBUG(dbgs() << "Cleaned private EFLAGS before instruction: " << MI);
+        // PTEX-TODO: An even better approach would be to just transform the instruction itself.
+        // But this might take more engineering work.
+        // Just adding a new instruction is easiest for now.
+      }
+#elif 0
+      // PTEX-FIXME: Re-enable.
+      if (PrivTys.getInstrPrivacyIn(&MI).get(X86::EFLAGS) == PrivatelyTyped &&
+          PrivTys.getInstrPrivacyOut(&MI).get(X86::EFLAGS) == PubliclyTyped &&
+          mayPartiallyUpdateEFLAGS(MI)) {
+
+        assert(llvm::any_of(MI.operands(), [] (const auto &MO) {
+          return MO.isReg() && MO.getReg() == X86::EFLAGS && MO.isDef();
+        }));
+        assert(llvm::none_of(MI.operands(), [] (const auto &MO) {
+          return MO.isReg() && MO.getReg() == X86::EFLAGS && MO.isUse();
+        }));
+
+        MachineInstr *CleanFlagsMI = BuildMI(MBB, MI.getIterator(), DebugLoc(), TII->get(X86::OR32rr), X86::ESP)
+                                         .addReg(X86::ESP)
+                                         .addReg(X86::ESP)
+                                         .getInstr();
+        auto &Privacy = PrivTys.getInstrPrivacyIn(&MI);
+        PrivTys.getInstrPrivacyIn(CleanFlagsMI) = Privacy;
+        Privacy.set(X86::EFLAGS, PubliclyTyped);
+        PrivTys.getInstrPrivacyOut(CleanFlagsMI) = Privacy;
+        Changed = true;
+        LLVM_DEBUG(dbgs() << "Cleaned private EFLAGS before instruction: " << MI);
+      }
+#endif
+    }
+  }
+
+  return Changed;
+}
+
 // TODO: Unify with `get/setInstrPublic`
 std::optional<PrivacyType> X86::getInstrPrivacy(const MachineInstr &MI) {
   const bool Pub = MI.getFlag(MachineInstr::TPEPubM);
@@ -660,11 +768,69 @@ void X86LLSCT::addPrivacyPrefixes(MachineFunction &MF, X86PrivacyTypeAnalysis &P
   }
 }
 
+static bool mayPartiallyUpdateEFLAGS(const MachineInstr &MI) {
+#if 0
+  // Consider calls and returns to partially update EFLAGS.
+  if (MI.isCall() || MI.isReturn())
+    return true;
+#endif
+  
+  // If EFLAGS is not def'ed, then it doesn't update EFLAGS, period.
+  if (llvm::none_of(MI.operands(), [] (const MachineOperand &MO) -> bool {
+    return MO.isReg() && MO.getReg() == X86::EFLAGS && MO.isDef();
+  })) {
+    return false;
+  }
+
+  switch (MI.getOpcode()) {
+#define CASE(s) case X86::s:
+#define SHIFT_SUFFIX(s) CASE(s##1) CASE(s##CL) CASE(s##i)
+#define SHIFT_DST(s) SHIFT_SUFFIX(s##m) SHIFT_SUFFIX(s##r)
+#define SHIFT(s) SHIFT_DST(s##8) SHIFT_DST(s##16) SHIFT_DST(s##32) SHIFT_DST(s##64)
+    SHIFT(SAR);
+    SHIFT(SHL);
+    SHIFT(SHR);
+    return true;
+
+  case X86::DEC8r:
+  case X86::DEC16r:
+  case X86::DEC32r:
+  case X86::DEC64r:
+  case X86::INC8r:
+  case X86::INC16r:
+  case X86::INC32r:
+  case X86::INC64r:
+    return true;
+
+  default:
+    return false;
+  }
+}
+
+void X86LLSCT::annotateVirtualPointers(MachineFunction &MF) {
+  const MachineRegisterInfo &MRI = MF.getRegInfo();
+  for (MachineBasicBlock &MBB : MF) {
+    for (MachineInstr &MI : MBB) {
+      const auto MOAccessesPointerAsData = [&] (const MachineOperand &MO) -> bool {
+        return MO.isReg() && !MO.isImplicit() && MRI.getType(MO.getReg()).isPointer() &&
+            (MO.isDef() || (MO.isUse() && !MI.mayLoadOrStore()));
+      };
+      const bool AccessesPointerAsData = llvm::any_of(MI.operands(), MOAccessesPointerAsData);
+      if (AccessesPointerAsData) {
+        // Mark instruction public.
+        X86::setInstrPrivacy(MI, PubliclyTyped);
+        LLVM_DEBUG(dbgs() << "PTeX.LLT: marking instruction public: " << MI);
+      }
+    }
+  }
+  MF.getRegInfo().clearVirtRegTypes();
+}
+
 INITIALIZE_PASS_BEGIN(X86LLSCT, PASS_KEY "-pass",
 		      "X86 LLSCT pass", false, false)
 INITIALIZE_PASS_END(X86LLSCT, PASS_KEY "-pass",
 		    "X86 LLSCT pass", false, false)
 
-FunctionPass *llvm::createX86LLSCTPass(bool Instrument) {
-  return new X86LLSCT(Instrument);
+FunctionPass *llvm::createX86LLSCTPass(const char *s) {
+  return new X86LLSCT(s);
 }

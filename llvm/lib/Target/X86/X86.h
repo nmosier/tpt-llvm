@@ -163,7 +163,7 @@ FunctionPass *createX86LoadValueInjectionRetHardeningPass();
 FunctionPass *createX86SpeculativeLoadHardeningPass();
 FunctionPass *createX86SpeculativeExecutionSideEffectSuppression();
 
-FunctionPass *createX86LLSCTPass(bool Instrument);
+FunctionPass *createX86LLSCTPass(const char *s);
 FunctionPass *createX86AnnotatePointersPass();
 
 // PTEX-TODO: Remove.

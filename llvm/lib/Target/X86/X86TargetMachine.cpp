@@ -532,10 +532,16 @@ void X86PassConfig::addPreRegAlloc() {
   addPass(createX86FlagsCopyLoweringPass());
   addPass(createX86DynAllocaExpander());
 
+  // PTEX-EXPERIMENTAL: LLT printing.
+  addPass(createX86LLSCTPass("llt"));
+
+#if 0
   if (getOptLevel() != CodeGenOpt::None)
     addPass(createX86PreTileConfigPass());
   else
     addPass(createX86FastPreTileConfigPass());
+#endif
+
 }
 
 void X86PassConfig::addMachineSSAOptimization() {
@@ -544,7 +550,9 @@ void X86PassConfig::addMachineSSAOptimization() {
 }
 
 void X86PassConfig::addPostRegAlloc() {
+#if 0
   addPass(createX86LowerTileCopyPass());
+#endif
   addPass(createX86FloatingPointStackifierPass());
   // When -O0 is enabled, the Load Value Injection Hardening pass will fall back
   // to using the Speculative Execution Side Effect Suppression pass for
@@ -554,7 +562,7 @@ void X86PassConfig::addPostRegAlloc() {
     addPass(createX86LoadValueInjectionLoadHardeningPass());
 
   // PTeX: Stage 1.
-  addPass(createX86LLSCTPass(/*Instrument*/true));
+  addPass(createX86LLSCTPass("instrument"));
   addPass(createX86AnnotatePointersPass());
 }
 
@@ -587,7 +595,7 @@ void X86PassConfig::addPreEmitPass() {
   // PTEX-TODO: May need to move this even later to avoid missing
   // late-inserted instructions.
   // PTEX-TODO: Can re-enable instrumentation or assert no instrumentation required to find LLVM bugs.
-  addPass(createX86LLSCTPass(/*Instrument*/false));
+  addPass(createX86LLSCTPass("privty"));
 }
 
 void X86PassConfig::addPreEmitPass2() {
@@ -646,7 +654,9 @@ void X86PassConfig::addPreEmitPass2() {
 }
 
 bool X86PassConfig::addPostFastRegAllocRewrite() {
+#if 0
   addPass(createX86FastTileConfigPass());
+#endif
   return true;
 }
 

@@ -4191,6 +4191,10 @@ SDValue X86TargetLowering::LowerFormalArguments(
           llvm_unreachable("Unknown argument type!");
 
         Register Reg = MF.addLiveIn(VA.getLocReg(), RC);
+        // PTEX-HACK: Should programatically compute the pointer size.
+        // PTEX-HACK: Maybe we need to remember the pointer address space?
+        if (VA.isPointerTy())
+          MF.getRegInfo().setType(Reg, LLT::pointer(0, 64));
         ArgValue = DAG.getCopyFromReg(Chain, dl, Reg, RegVT);
       }
 
