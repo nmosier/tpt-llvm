@@ -95,6 +95,23 @@ void PublicPhysRegs::stepForward(const MachineInstr &MI) {
       LPR.removeReg(MO.getReg()); // TODO: Use our version of removeReg if added.
 }
 
+void PublicPhysRegs::stepBackward(const MachineInstr &MI) {
+  // First, add in any defs that are marked public.
+  for (const MachineOperand &MO : MI.operands())
+    if (MO.isReg() && MO.isDef() && MO.isPublic())
+      addReg(MO.getReg());
+
+  // Then, use LPR's stepBackwartd to remove defs and clobbers.
+  // However, this adds all (non-undef'ed) uses to the set, which we don't want.
+  // So we need to remove all non-public uses afterwards.
+  LPR.stepBackward(MI);
+
+  // Remove all non-public uses.
+  for (const MachineOperand &MO : MI.operands())
+    if (MO.isReg() && MO.isUse() && !MO.isPublic())
+      LPR.removeReg(MO.getReg()); // TODO: Use our version of removeReg if added.
+}
+
 bool PublicPhysRegs::addReg(MCPhysReg PubReg) {
   if (LPR.contains(PubReg) || X86::isRegAlwaysPublic(PubReg, *TRI))
     return false;
@@ -274,12 +291,8 @@ bool PrivacyTypeAnalysis::forward() {
 }
 
 bool PrivacyTypeAnalysis::backward() {
-#if 0
-  BackwardPrivacyTypeAnalysis Backward(MF);
+  BackwardPrivacyTypeAnalysis Backward(MF, In, Out);
   return Backward.run();
-#else
-  return false;
-#endif
 }
 
 bool PrivacyTypeAnalysis::run() {
@@ -360,6 +373,7 @@ bool ForwardPrivacyTypeAnalysis::instruction(MachineInstr &MI, PublicPhysRegs &P
   }
 
   // Step forward.
+  // TODO: Don't think we need PubRegs here. We can just look at the operands.
   const bool DefsPublic = dataUsesPublic(MI, PubRegs) && !MI.isCall();
   PubRegs.stepForward(MI); // NOTE: This doesn't know about DefsPublic; need to manually add them.
 
@@ -379,14 +393,92 @@ bool ForwardPrivacyTypeAnalysis::instruction(MachineInstr &MI, PublicPhysRegs &P
   return Changed;
 }
 
-void ForwardPrivacyTypeAnalysis::mergeIntoParent() {
+// TODO: Can factor out most of this code.
+void BackwardPrivacyTypeAnalysis::init() {
+  const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+
+  for (MachineBasicBlock &MBB : MF) {
+    // Allocate pub-ins and pub-outs.
+    In[&MBB].init(TRI);
+    Out[&MBB].init(TRI);
+
+    // Optimistically initialize the pub-ins and pub-outs to the live-ins and live-outs
+    // of all other blocks.
+    In[&MBB].addLiveIns(MBB);
+    Out[&MBB].addLiveOuts(MBB);
+
+    // Conservatively initialize the pub-outs of exit blocks to the parent analysis' pub-outs.
+    // We consider anything without a successor to be an exit block.
+    if (MBB.succ_empty())
+      Out[&MBB] = ParentOut[&MBB];
+  }
+}
+
+bool BackwardPrivacyTypeAnalysis::block(MachineBasicBlock &MBB) {
+  bool Changed = false;
+
+  // Meet block pub-out with successor block pub-ins.
+  for (MachineBasicBlock *SuccMBB : MBB.successors())
+    Changed |= Out[&MBB].intersect(In[SuccMBB]);
+
+  // Now, transfer across the block, *in reverse order*.
+  PublicPhysRegs PubRegs = Out[&MBB];
+  for (MachineInstr &MI : llvm::reverse(MBB))
+    Changed |= instruction(MI, PubRegs);
+
+  // Finally, update the pub-ins.
+  Changed |= In[&MBB].intersect(PubRegs);
+
+  return Changed;
+}
+
+// Returns true if any of the instruction data operands are public.
+bool BackwardPrivacyTypeAnalysis::dataDefsPublic(const MachineInstr &MI) const {
+  for (const MachineOperand &MO : MI.operands())
+    if (MO.isReg() && MO.isDef() && MO.isPublic() && !(MO.isImplicit() && registerIsAlwaysPublic(MO.getReg())))
+      return true;
+  return false;
+}
+
+bool BackwardPrivacyTypeAnalysis::instruction(MachineInstr &MI, PublicPhysRegs &PubRegs) {
+  bool Changed = false;
+
+  // To start, if any defs are public, then mark the operand public.
+  for (MachineOperand &MO : MI.operands()) {
+    if (MO.isReg() && MO.isDef() && !MO.isUndef() && PubRegs.isPublic(MO.getReg()) && !MO.isPublic()) {
+      MO.setIsPublic();
+      Changed = true;
+    }
+  }
+
+  // Step backward.
+  const bool MarkUsesPublic = dataDefsPublic(MI) && !MI.isCall();
+  PubRegs.stepBackward(MI);
+
+  // Mark uses public.
+  if (MarkUsesPublic) {
+    for (MachineOperand &MO : MI.operands()) {
+      if (MO.isReg() && MO.isDef() && !MO.isUndef() && !MO.isPublic()) {
+        PubRegs.addReg(MO.getReg());
+        MO.setIsPublic();
+        Changed = true;
+      }
+    }
+  }
+
+  ParentChanged |= Changed;
+
+  return Changed;
+}
+
+void DirectionalPrivacyTypeAnalysis::mergeIntoParent() {
   for (MachineBasicBlock &MBB : MF) {
     ParentChanged |= ParentIn[&MBB].addRegs(In[&MBB]);
     ParentChanged |= ParentOut[&MBB].addRegs(Out[&MBB]);
   }
 }
 
-bool ForwardPrivacyTypeAnalysis::run() {
+bool DirectionalPrivacyTypeAnalysis::run() {
   init();
 
   bool IterChanged;

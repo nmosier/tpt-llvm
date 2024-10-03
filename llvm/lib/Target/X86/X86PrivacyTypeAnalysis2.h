@@ -35,6 +35,7 @@ public:
   bool intersect(const PublicPhysRegs &Other);
 
   void stepForward(const MachineInstr &MI);
+  void stepBackward(const MachineInstr &MI);
 
   // NOTE: Needs to check AlwaysPublicRegisters.
   bool isPublic(MCPhysReg Reg) const;
@@ -85,10 +86,8 @@ private:
   bool backward();
 };
 
-// TODO: Make abstract class, 'UnidirectionalPrivacyTypeAnalysis'.
-// Then have two concerete subclasses: ForwardPrivacyTypeAnalysis,
-// BackwardPrivacyTypeAnalysis.
-class ForwardPrivacyTypeAnalysis {
+class DirectionalPrivacyTypeAnalysis {
+protected:
   using PubMap = PrivacyTypeAnalysis::PubMap;
 
   MachineFunction &MF;
@@ -102,20 +101,47 @@ class ForwardPrivacyTypeAnalysis {
   bool ParentChanged = false;
 
 public:
-  ForwardPrivacyTypeAnalysis(MachineFunction &MF, PubMap &ParentIn, PubMap &ParentOut) :
+  DirectionalPrivacyTypeAnalysis(MachineFunction &MF, PubMap &ParentIn, PubMap &ParentOut) :
       MF(MF), ParentIn(ParentIn), ParentOut(ParentOut) {}
 
-  // Run the forward iterative data-flow analysis.
   bool run();
 
-private:
+protected:
   // Initialize In, Out.
-  void init();
+  // TODO: Can actually use some shared code here.
+  // TODO: Make this per-block as well?
+  virtual void init() = 0;
 
-  bool block(MachineBasicBlock &MBB);
-  bool instruction(MachineInstr &MI, PublicPhysRegs &PubRegs);
+  // Process each block, returning whether a change occurred.
+  virtual bool block(MachineBasicBlock &MBB) = 0;
+
+private:
   void mergeIntoParent();
+};
+
+// TODO: Make abstract class, 'UnidirectionalPrivacyTypeAnalysis'.
+// Then have two concerete subclasses: ForwardPrivacyTypeAnalysis,
+// BackwardPrivacyTypeAnalysis.
+class ForwardPrivacyTypeAnalysis final : public DirectionalPrivacyTypeAnalysis {
+  void init() override;
+  bool block(MachineBasicBlock &MBB) override;
+  bool instruction(MachineInstr &MI, PublicPhysRegs &PubRegs);
   bool dataUsesPublic(const MachineInstr &MI, const PublicPhysRegs &PubRegs) const;
+
+public:
+  ForwardPrivacyTypeAnalysis(MachineFunction &MF, PubMap &ParentIn, PubMap &ParentOut) :
+      DirectionalPrivacyTypeAnalysis(MF, ParentIn, ParentOut) {}
+};
+
+class BackwardPrivacyTypeAnalysis final : public DirectionalPrivacyTypeAnalysis {
+  void init() override;
+  bool block(MachineBasicBlock &MBB) override;
+  bool instruction(MachineInstr &MI, PublicPhysRegs &PubRegs);
+  bool dataDefsPublic(const MachineInstr &MI) const; // TODO: Make this static instead.
+
+public:
+  BackwardPrivacyTypeAnalysis(MachineFunction &MF, PubMap &ParentIn, PubMap &ParentOut) :
+      DirectionalPrivacyTypeAnalysis(MF, ParentIn, ParentOut) {}
 };
 
 
