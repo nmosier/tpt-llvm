@@ -100,11 +100,11 @@ private:
   std::optional<PrivacyType> computeInstrPrivacy(MachineInstr &MI, X86PrivacyTypeAnalysis &PrivTys);
   void annotateVirtualPointers(MachineFunction &MF);
 
-  [[nodiscard]] bool eliminatePrivateCSRsForCall(MachineInstr &MI, const PublicPhysRegs &PubRegs,
+  [[nodiscard]] bool eliminatePrivateCSRsForCall(MachineInstr &MI, PublicPhysRegs &PubRegs,
                                                  auto GetSpillInfo);
   void computePrivateCSRsToSpill(const MachineInstr &MI, const PublicPhysRegs &PubRegs,
                                  SmallVectorImpl<MCPhysReg> &ToSpill);
-  void spillPrivateCSR(MCPhysReg SpillReg, MachineInstr &MI, auto GetSpillInfo);
+  MCPhysReg spillPrivateCSR(MCPhysReg SpillReg, MachineInstr &MI, auto GetSpillInfo);
 };
 
 }
@@ -346,8 +346,9 @@ void X86LLSCT::computePrivateCSRsToSpill(const MachineInstr &MI, const PublicPhy
     if (PristineRegs[PristineReg])
       PrivateCSRs.erase(PristineReg);
 #else
+  // TODO: Communicate this in argument.
   LivePhysRegs LPR(*TRI);
-  LPR.addLiveIns(*MI.getParent());
+  LPR.addLiveInsNoPristines(*MI.getParent());
   for (auto MBBI = MI.getParent()->begin(); MBBI != MI.getIterator(); ++MBBI) {
     SmallVector<std::pair<MCPhysReg, const MachineOperand *>> Clobbers;
     LPR.stepForward(*MBBI, Clobbers);
@@ -365,16 +366,37 @@ void X86LLSCT::computePrivateCSRsToSpill(const MachineInstr &MI, const PublicPhy
 
   // Finally, compute the maximal cover.
   getRegisterCover(PrivateCSRs, ToSpill, TRI);
+
+#if 0
+  // But agh, we might have some funky non-standard registers in there now, like
+  // the upper word of EAX.
+  static const TargetRegisterClass *GoldenRCs[] = {
+    &X86::GR8RegClass, &X86::GR16RegClass, &X86::GR32RegClass, &X86::GR64RegClass,
+  };
+  // For each register, 
+
+  
+  assert(llvm::any_of(GoldenRCs, [&] (const TargetRegisterClass *GoldenRC) -> bool {
+    return GoldenRC->hasSubclassEq(RegClass);
+  }));
+  
+  
+  
+  // Find the minimal register that
+#endif
 }
 
 // TODO: Change GetSpillInfo to std::function, at least.
-void X86LLSCT::spillPrivateCSR(MCPhysReg SpillReg, MachineInstr &MI, auto GetSpillInfo) {
+MCPhysReg X86LLSCT::spillPrivateCSR(MCPhysReg SpillReg, MachineInstr &MI, auto GetSpillInfo) {
+  const auto PreMBBI = MI.getIterator();
+  const auto PostMBBI = std::next(PreMBBI);
   MachineBasicBlock &MBB = *MI.getParent();
   MachineFunction &MF = *MBB.getParent();
   const auto &Subtarget = MF.getSubtarget();
   const TargetRegisterInfo *TRI = Subtarget.getRegisterInfo();
   const TargetInstrInfo *TII = Subtarget.getInstrInfo();
   const auto *RegClass = TRI->getMinimalPhysRegClass(SpillReg);
+  LLVM_DEBUG(dbgs() << "Spilling private CSR " << TRI->getRegAsmName(SpillReg) << "\n");
 
   // Allocate or get spill slot for register.
   PrivateSpillInfo &PSI = *GetSpillInfo(&MI, SpillReg);
@@ -382,14 +404,48 @@ void X86LLSCT::spillPrivateCSR(MCPhysReg SpillReg, MachineInstr &MI, auto GetSpi
 
   // Store to spill slot before call.
   // TODO: Should also check if it's live, once we start spilling dead registers.
+  // TODO: Actually, once we check if it's live, then we don't need to check ...
+  // TODO: Actually, isn't this impossible? We should only have public CSRs on return.
   if (!MI.isReturn()) {
     // Insert store instruction.
-    errs() << "FIXME: Revert isKill=true\n";
-    TII->storeRegToStackSlot(MBB, MI.getIterator(), SpillReg, /*isKill*/false, FrameIndex, RegClass, TRI, X86::NoRegister);
+    TII->storeRegToStackSlot(MBB, PreMBBI, SpillReg, /*isKill*/true, FrameIndex, RegClass, TRI, X86::NoRegister);
   }
+
+  // Then zero out the register.
+#ifndef NDEBUG
+  // Make sure that we don't have any weird overlapping live registers.
+  {
+    LivePhysRegs LPR(*TRI);
+    LPR.addLiveIns(MBB);
+    const MachineRegisterInfo &MRI = MF.getRegInfo();
+    for (auto it = MBB.begin(); it != MI.getIterator(); ++it) {
+      SmallVector<std::pair<MCPhysReg, const MachineOperand *>> Clobbers;
+      LPR.stepForward(*it, Clobbers);
+    }
+    LPR.removeReg(SpillReg);
+    assert(LPR.available(MRI, SpillReg));
+  }
+#endif
+  MachineInstr *ZeroMI =
+      BuildMI(MBB, PreMBBI, DebugLoc(), TII->get(X86::MOV32r0))
+      .addDef(getX86SubSuperRegister(SpillReg, 32), RegState::Dead)
+      .addDef(X86::EFLAGS, RegState::Implicit | RegState::Dead)
+      .addDef(getX86SubSuperRegister(SpillReg, 64), RegState::Implicit | RegState::Dead)
+      .getInstr();
+  for (MachineOperand &MO : ZeroMI->operands())
+    if (MO.isDef())
+      MO.setIsPublic();
+
+  // Load from spill slot after call.
+  if (!MI.isReturn()) {
+    // Insert load instruction.
+    TII->loadRegFromStackSlot(MBB, PostMBBI, SpillReg, FrameIndex, RegClass, TRI, X86::NoRegister);
+  }
+
+  return getX86SubSuperRegister(SpillReg, 64);
 }
 
-bool X86LLSCT::eliminatePrivateCSRsForCall(MachineInstr &MI, const PublicPhysRegs &PubRegs, auto GetSpillInfo) {
+bool X86LLSCT::eliminatePrivateCSRsForCall(MachineInstr &MI, PublicPhysRegs &PubRegs, auto GetSpillInfo) {
   assert(MI.isCall());
 
   // Collect registers to spill.
@@ -402,8 +458,12 @@ bool X86LLSCT::eliminatePrivateCSRsForCall(MachineInstr &MI, const PublicPhysReg
     LLVM_DEBUG(dbgs() << " for call: " << MI);
   }
 
-  for (MCPhysReg PrivateCSR : ToSpill)
-    spillPrivateCSR(PrivateCSR, MI, GetSpillInfo);
+  for (MCPhysReg PrivateCSR : ToSpill) {
+    const MCPhysReg ZeroReg = spillPrivateCSR(PrivateCSR, MI, GetSpillInfo);
+#if 0
+    PubRegs.addReg(ZeroReg);
+#endif
+  }
 
   return !ToSpill.empty();
 }
@@ -490,6 +550,7 @@ bool X86LLSCT::eliminatePrivateCSRs(MachineFunction &MF, const X86::PrivacyTypeA
     return &CallPrivateSpillInfo[MI];
   };
 
+  // BUG: We're not updating PubRegs properly.
   for (MachineBasicBlock &MBB : MF) {
     PublicPhysRegs PubRegs = PTA.getIn(&MBB);
     for (MachineInstr &MI : MBB) {
@@ -499,6 +560,43 @@ bool X86LLSCT::eliminatePrivateCSRs(MachineFunction &MF, const X86::PrivacyTypeA
     }
   }
 
+  // Idea: stutter.
+  bool IterChanged;
+  for (MachineBasicBlock &MBB : MF) {
+    PublicPhysRegs PubRegs = PTA.getIn(&MBB);
+    for (auto MBBI = MBB.begin(); MBBI != MBB.end(); ) {
+      MachineInstr &MI = *MBBI;
+      if (MI.isCall()) {
+        std::optional<MachineBasicBlock::iterator> PreMBBI;
+        if (MBBI != MBB.begin())
+          PreMBBI = std::prev(MBBI);
+        const auto PostMBBI = std::next(MBBI);
+
+        const bool LocalChange = eliminatePrivateCSRsForCall(MI, PubRegs, GetSpillInfo);
+        Changed |= LocalChange;
+
+        // If we inserted instructions, then we stutter.
+        if (LocalChange) {
+          MBBI = PreMBBI ? std::next(*PreMBBI) : MBB.begin();
+          MBBI->dump();
+          continue;
+        }
+      }
+
+      // In this case, we didn't add any new instructions, so advance.
+      PubRegs.stepForward(MI);
+      ++MBBI;
+    }
+
+#if 0
+    for (MachineInstr &MI : llvm::make_early_inc_range(MBB)) {
+      if (MI.isCall())
+        Changed |= eliminatePrivateCSRsForCall(MI, PubRegs, GetSpillInfo);
+      PubRegs.stepForward(MI);
+    }
+#endif
+  }
+  
   return Changed;
 
   // =====================================================================
