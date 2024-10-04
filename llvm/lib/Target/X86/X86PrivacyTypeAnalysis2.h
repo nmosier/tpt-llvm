@@ -37,6 +37,7 @@ public:
 
   void stepForward(const MachineInstr &MI);
   void stepBackward(const MachineInstr &MI);
+  void removeDefs(const MachineInstr &MI);
 
   // NOTE: Needs to check AlwaysPublicRegisters.
   bool isPublic(MCPhysReg Reg) const;

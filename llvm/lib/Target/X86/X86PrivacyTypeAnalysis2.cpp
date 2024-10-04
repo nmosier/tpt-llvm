@@ -96,10 +96,13 @@ void PublicPhysRegs::stepForward(const MachineInstr &MI) {
 }
 
 void PublicPhysRegs::stepBackward(const MachineInstr &MI) {
+#if 0
+  // NOTE: This is stupid. stepBackward() removes them anyway.
   // First, add in any defs that are marked public.
   for (const MachineOperand &MO : MI.operands())
     if (MO.isReg() && MO.isDef() && MO.isPublic())
       addReg(MO.getReg());
+#endif
 
   // Then, use LPR's stepBackwartd to remove defs and clobbers.
   // However, this adds all (non-undef'ed) uses to the set, which we don't want.
@@ -110,6 +113,10 @@ void PublicPhysRegs::stepBackward(const MachineInstr &MI) {
   for (const MachineOperand &MO : MI.operands())
     if (MO.isReg() && MO.isUse() && !MO.isPublic())
       LPR.removeReg(MO.getReg()); // TODO: Use our version of removeReg if added.
+}
+
+void PublicPhysRegs::removeDefs(const MachineInstr &MI) {
+  LPR.removeDefs(MI);
 }
 
 bool PublicPhysRegs::addReg(MCPhysReg PubReg) {
@@ -484,12 +491,18 @@ bool BackwardPrivacyTypeAnalysis::instruction(MachineInstr &MI, PublicPhysRegs &
 
   // Step backward.
   const bool MarkUsesPublic = dataDefsPublic(MI) && !MI.isCall();
+#if 0
   PubRegs.stepBackward(MI);
+#else
+  PubRegs.removeDefs(MI);
+#endif
 
   // Mark uses public.
-  if (MarkUsesPublic) {
-    for (MachineOperand &MO : MI.operands()) {
-      if (MO.isReg() && MO.isDef() && !MO.isUndef() && !MO.isPublic()) {
+  for (MachineOperand &MO : MI.operands()) {
+    if (MO.isReg() && MO.isUse() && !MO.isUndef()) {
+      if (MO.isPublic()) {
+        PubRegs.addReg(MO.getReg());
+      } else if (MarkUsesPublic || PubRegs.isPublic(MO.getReg())) {
         PubRegs.addReg(MO.getReg());
         MO.setIsPublic();
         Changed = true;
@@ -523,7 +536,7 @@ bool DirectionalPrivacyTypeAnalysis<Base>::run() {
     ++IterCount;
   } while (IterChanged);
 
-  LLVM_DEBUG(dbgs() << "forward iterations: " << IterCount << "\n");
+  LLVM_DEBUG(dbgs() << "iterations: " << IterCount << "\n");
 
   // Copy newly pub-in/pub-out regs to the parent's pub-ins/pub-outs.
   mergeIntoParent();

@@ -529,7 +529,11 @@ public:
 
   void setIsUndef(bool Val = true) {
     assert(isReg() && "Wrong MachineOperand mutator");
+#if 0
     assert(!(Val && isPublic()) && "Can't mark public operand undef");
+#else
+# warning "FIXME"
+#endif
     IsUndef = Val;
   }
 

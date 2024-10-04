@@ -11,6 +11,8 @@
 #include "llvm/Support/WithColor.h"
 #include "llvm/IR/Instructions.h"
 
+#define DEBUG_TYPE "x86-ptex"
+
 using namespace llvm;
 
 namespace llvm::X86 {
@@ -63,24 +65,16 @@ void X86MCInstLowerTPE(const MachineInstr *MI, MCInst& OutMI) {
     assert((flags & f) == 0);
     OutMI.setFlags(flags | f);
   };
-    
-  // Declassify flag
-  bool privty = MI->getFlag(MachineInstr::TPEPrivM);
-  bool pubty = MI->getFlag(MachineInstr::TPEPubM);
-  assert(!(privty && pubty));
 
-  if (privty) {
-    addFlag(X86::IP_TPE_PRIVM); // PTEX-TODO: Rename.
-  } else if (pubty) {
-    // Default case: no prefix required.
-    // addFlag(X86::IP_TPE_PUBM);
-  } else {
-    if (AllowUntyped) {
-      // WithColor::warning() << "PTeX embedding: encountered untyped instruction: " << *MI;
-    } else {
-      report_fatal_error("PTeX embedding: encountered untyped instruction");
-    }
-  }
+  // Add the PROT prefix if some outputs are marked private.
+  const bool Protected = llvm::any_of(MI->operands(), [] (const MachineOperand &MO) -> bool {
+    return MO.isReg() && MO.isDef() && !MO.isPublic();
+  });
+  if (!Protected)
+    return;
+
+  LLVM_DEBUG(dbgs() << "Adding PROT prefix to " << *MI);
+  addFlag(X86::IP_TPE_PRIVM);
 }
   
 }

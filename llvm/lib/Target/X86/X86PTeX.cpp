@@ -2,6 +2,7 @@
 
 #include <optional>
 #include <set>
+#include <sstream>
 
 // PTEX-TODO: Cull these includes.
 #include "X86.h"
@@ -50,6 +51,20 @@ cl::opt<bool> PrefixProtectedStores {
   PASS_KEY "-stores",
   cl::desc("Add PROT prefix for stores"),
   cl::init(false),
+  cl::Hidden,
+};
+
+static cl::opt<bool> EliminatePrivateCSRs {
+  PASS_KEY "-csrs",
+  cl::desc("[PTeX] Eliminate private CSRs"),
+  cl::init(false),
+  cl::Hidden,
+};
+
+static cl::opt<std::string> DumpDir {
+  PASS_KEY "-dump-dir",
+  cl::desc("[PTeX] Dump directory"),
+  cl::init(""),
   cl::Hidden,
 };
 
@@ -145,7 +160,18 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
 
   Changed |= instrumentPublicArguments(MF, PTA);
   Changed |= instrumentPublicCalleeReturnValues(MF);
-  Changed |= eliminatePrivateCSRs(MF, PTA);
+  if (X86::EliminatePrivateCSRs)
+    Changed |= eliminatePrivateCSRs(MF, PTA);
+
+  if (!X86::DumpDir.getValue().empty()) {
+    std::string path;
+    raw_string_ostream path_ss(path);
+    path_ss << X86::DumpDir.getValue() << "/" << MF.getName() << ".mir";
+    std::error_code EC;
+    raw_fd_ostream os(path, EC);
+    assert(!EC);
+    MF.print(os);
+  }  
 
 #if 0
   if (Instrument) {
