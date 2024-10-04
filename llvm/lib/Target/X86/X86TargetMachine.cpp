@@ -533,7 +533,7 @@ void X86PassConfig::addPreRegAlloc() {
   addPass(createX86DynAllocaExpander());
 
   // PTEX-EXPERIMENTAL: LLT printing.
-  addPass(createX86LLSCTPass("llt"));
+  addPass(createX86LLSCTPass(/*Instrument*/false));
 
 #if 0
   if (getOptLevel() != CodeGenOpt::None)
@@ -562,7 +562,7 @@ void X86PassConfig::addPostRegAlloc() {
     addPass(createX86LoadValueInjectionLoadHardeningPass());
 
   // PTeX: Stage 1.
-  addPass(createX86LLSCTPass("instrument"));
+  addPass(createX86LLSCTPass(/*Instrument*/true));
   addPass(createX86AnnotatePointersPass());
 }
 
@@ -595,7 +595,7 @@ void X86PassConfig::addPreEmitPass() {
   // PTEX-TODO: May need to move this even later to avoid missing
   // late-inserted instructions.
   // PTEX-TODO: Can re-enable instrumentation or assert no instrumentation required to find LLVM bugs.
-  addPass(createX86LLSCTPass("privty"));
+  addPass(createX86LLSCTPass(/*Instrument*/false));
 }
 
 void X86PassConfig::addPreEmitPass2() {

@@ -69,10 +69,7 @@ namespace {
 class X86LLSCT final : public MachineFunctionPass {
 public:
   static char ID;
-  X86LLSCT(const char *s) : MachineFunctionPass(ID) {
-    if (s)
-      this->s = s;
-  }
+  X86LLSCT(bool Instrument) : MachineFunctionPass(ID), Instrument(Instrument) {}
 
   void getAnalysisUsage(AnalysisUsage& AU) const override {
     AU.setPreservesCFG();
@@ -82,7 +79,7 @@ public:
   bool runOnMachineFunction(MachineFunction& MF) override;
 
 private:
-  std::string s;
+  const bool Instrument;
   
   // Ensures that register types only transition from private->public
   // if the register is the output of an instruction.
@@ -93,7 +90,7 @@ private:
 
 
   // TODO: Make another object that has MF and PrivTys as member.
-  [[nodiscard]] bool instrumentPublicArguments(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
+  [[nodiscard]] bool instrumentPublicArguments(MachineFunction &MF, X86::PrivacyTypeAnalysis &PTA);
   [[nodiscard]] bool instrumentPublicCalleeReturnValues(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
   [[nodiscard]] bool eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
   [[nodiscard]] bool avoidPartialUpdatesOfPrivateEFLAGS(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
@@ -112,21 +109,22 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
   if (!X86::EnablePTeX())
     return false;
 
-  annotateVirtualPointers(MF);
-  if (s == "llt")
+  if (MF.getRegInfo().isSSA()) {
+    assert(!Instrument && "Cannot instrument SSA machine IR!");
+    annotateVirtualPointers(MF);
     return false;
+  }
 
+  // Run physreg privacy analysis.
   X86::PrivacyTypeAnalysis PTA(MF);
   PTA.run();
   if (X86::DumpPTeX(MF))
     PTA.print(errs());
-  return false;
 
-  if (s == "llt") {
-    annotateVirtualPointers(MF);
+  // If we're not instrumenting the code, then just return.
+  if (!Instrument)
     return false;
-  }  
-
+  
   MF.verify();
   
   if (X86::DumpPTeX(MF)) {
@@ -135,43 +133,11 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
     errs() << "===========================================\n";
   }
 
-  assert(s == "privty" || s == "instrument");
-  const bool Instrument = (s == "instrument");
-
   bool Changed = false;
-  
-  // Step 1: Infer privacy types for the function.
-  X86PrivacyTypeAnalysis PrivacyTypes(MF);
-  PrivacyTypes.run();
 
-#if 1
-  if (const char *s = std::getenv("INSTRUMENT"); s && !atoi(s))
-    return false;
-#endif
-
-  auto skip = [] (const char *key) -> bool {
-    if (!PTEX_DEBUG)
-      return false;
-    if (const char *value = std::getenv(key); value && !atoi(value))
-      return true;
-    return false;
-  };
+  Changed |= instrumentPublicArguments(MF, PTA);
 
 #if 0
-  // DEBUG: Print landing pad stuff.
-  for (const auto &LPI : MF.getLandingPads()) {
-    errs() << "LandingPadBlock:\n" << *LPI.LandingPadBlock;
-    auto PrintLabels = [] (const auto& Labels) {
-      for (const MCSymbol *Sym : Labels) {
-        errs() << "  " << Sym << "\n";
-      }
-    };
-    errs() << "BeginLabels:\n"; PrintLabels(LPI.BeginLabels);
-    errs() << "EndLabels:\n"; PrintLabels(LPI.EndLabels);
-    errs() << "LandingPadLabel: " << LandingPadLabel << "\n";
-  }
-#endif
-  
   if (Instrument) {
 
     // TODO: Remove debugging envvar guards.
@@ -196,10 +162,11 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
   addPrivacyPrefixes(MF, PrivacyTypes);  
   
   // TODO: Verify some properties, like that there are no privately-typed callee-saved registers.
+#endif
 
   if (X86::DumpPTeX(MF)) {
     errs() << "===== X86PTeX AFTER: " << MF.getName() << " =====\n";
-    PrivacyTypes.dumpResults(errs(), MF);
+    PTA.dump();
     errs() << "============================================\n";
   }
 
@@ -218,62 +185,44 @@ static bool unfoldLoads(MachineFunction &MF) {
 }
 #endif
 
-bool X86LLSCT::instrumentPublicArguments(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys) {
-  // Task:
-  // Insert (publicly-typed) register copies for each live function argument.
-  
+bool X86LLSCT::instrumentPublicArguments(MachineFunction &MF, X86::PrivacyTypeAnalysis &PTA) {
+  const TargetInstrInfo *TII = MF.getSubtarget().getInstrInfo();
+  const MachineRegisterInfo &MRI = MF.getRegInfo();
   MachineBasicBlock &MBB = MF.front();
   auto MBBI = MBB.begin();
-  const PrivacyMask &Privacy = PrivTys.getBlockPrivacyIn(&MBB);
-  const auto *TII = MF.getSubtarget().getInstrInfo();
-  const MachineRegisterInfo &MRI = MF.getRegInfo();
-  [[maybe_unused]] const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
 
-  auto IsCalleeSaved = [&] (Register Reg) -> bool {
-    for (const auto *CSR = MRI.getCalleeSavedRegs(); *CSR != X86::NoRegister; ++CSR) {
-      if (*CSR == Reg) {
+  auto IsCalleeSaved = [&MRI] (MCPhysReg Reg) -> bool {
+    for (const auto *CSR = MRI.getCalleeSavedRegs(); *CSR != X86::NoRegister; ++CSR)
+      if (*CSR == Reg)
         return true;
-      } else {
-        assert(!TRI->regsOverlap(Reg, *CSR));
-      }
-    }
     return false;
   };
 
-  // Insert publicly-typed register copies.
-  for (const auto &[Reg, _] : MRI.liveins()) {
-
-    // No superregs should be live in.
-    assert(llvm::none_of(TRI->superregs(Reg), [&] (Register SuperReg) -> bool {
-      return MRI.isLiveIn(SuperReg);
-    }));
-    
-    const Register CanonicalReg = PrivacyMask::canonicalizeRegister(Reg);
-    
-    // Skip if canonical register is not public.
-    if (Privacy.get(CanonicalReg) != PubliclyTyped)
-      continue;
-
-    // Skip if canonical register is always public.
-    if (X86::registerIsAlwaysPublic(CanonicalReg))
-      continue;
-
-    // Skip if it's a callee-saved register.
-    if (IsCalleeSaved(Reg))
-      continue;
-
-    // Do copy.
-    TII->copyPhysReg(MBB, MBBI, DebugLoc(), Reg, Reg, /*KillSrc*/true);
-  }
+  SmallVector<MCPhysReg> PubRegs;
+  PTA.getIn(&MBB).getCover(PubRegs);
   
-  // Add privacy type info.
-  for (auto MBBI2 = MBB.begin(); MBBI2 != MBBI; ++MBBI2) {
-    MachineInstr *MI = &*MBBI2;
-    PrivTys.getInstrPrivacyIn(MI) = Privacy;
-    PrivTys.getInstrPrivacyOut(MI) = Privacy;
+  for (MCPhysReg PubReg : PubRegs) {
+    // Is this a callee-saved register?
+    // If so, skip.
+    if (IsCalleeSaved(PubReg))
+      continue;
+
+    // Insert dummy copy.
+    LLVM_DEBUG(dbgs() << "Marking pub-in argument public: "
+               << MF.getSubtarget().getRegisterInfo()->getRegAsmName(PubReg) << "\n");
+    TII->copyPhysReg(MBB, MBBI, DebugLoc(), PubReg, PubReg, /*KillSrc*/true);
+
+    // PTEX-TODO: We can reduce code size overhead by only inserting copies if the first use of
+    // this register will not be a public instruction or will be a store.
   }
 
-  return MBBI != MBB.begin();
+  // Mark all operands of inserted instructions as public.
+  for (auto MBBI2 = MBB.begin(); MBBI2 != MBBI; ++MBBI2)
+    for (MachineOperand &MO : MBBI2->operands())
+      if (MO.isReg())
+        MO.setIsPublic();
+
+  return MBB.begin() != MBBI;
 }
 
 bool X86LLSCT::instrumentPublicCalleeReturnValues(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys) {
@@ -838,6 +787,6 @@ INITIALIZE_PASS_BEGIN(X86LLSCT, PASS_KEY "-pass",
 INITIALIZE_PASS_END(X86LLSCT, PASS_KEY "-pass",
 		    "X86 LLSCT pass", false, false)
 
-FunctionPass *llvm::createX86LLSCTPass(const char *s) {
-  return new X86LLSCT(s);
+FunctionPass *llvm::createX86LLSCTPass(bool Instrument) {
+  return new X86LLSCT(Instrument);
 }

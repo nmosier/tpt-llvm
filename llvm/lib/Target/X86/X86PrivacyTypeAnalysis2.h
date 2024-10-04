@@ -49,6 +49,11 @@ public:
 
   PublicPhysRegs(const PublicPhysRegs &Other);
   PublicPhysRegs &operator=(const PublicPhysRegs &Other);
+
+  void getCover(SmallVectorImpl<MCPhysReg> &PubRegs) const;
+
+private:
+  void getCoverReg(SmallVectorImpl<MCPhysReg> &PubRegs, MCPhysReg OurReg) const;
 };
 
 inline raw_ostream &operator<<(raw_ostream &OS, const PublicPhysRegs &PubRegs) {
@@ -67,6 +72,9 @@ public:
 
   bool run();
   void print(raw_ostream &OS) const;
+  void dump() const { print(errs()); }
+  const PublicPhysRegs &getIn(MachineBasicBlock *MBB) const { return In.at(MBB); }
+  const PublicPhysRegs &getOut(MachineBasicBlock *MBB) const { return Out.at(MBB); }
 
 private:
   MachineFunction &MF;
