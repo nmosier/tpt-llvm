@@ -529,6 +529,7 @@ public:
 
   void setIsUndef(bool Val = true) {
     assert(isReg() && "Wrong MachineOperand mutator");
+    assert(!(Val && isPublic()) && "Can't mark public operand undef");
     IsUndef = Val;
   }
 
@@ -551,6 +552,8 @@ public:
 
   void setIsPublic(bool Val = true) {
     assert(isReg() && "Wrong MachineOperand mutator");
+    assert(!(Val && isUndef()) && "Can't mark undef operand public");
+    assert(!(Val && isDebug()) && "Can't mark debug operand public");
     IsPublic = Val;
   }
 
@@ -846,6 +849,7 @@ public:
     assert(!(isDead && !isDef) && "Dead flag on non-def");
     assert(!(isKill && isDef) && "Kill flag on def");
     assert(!(isUndef && isPublic) && "Public flag on undef");
+    assert(!(isDebug && isPublic) && "Public flag on debug");
     MachineOperand Op(MachineOperand::MO_Register);
     Op.IsDef = isDef;
     Op.IsImp = isImp;

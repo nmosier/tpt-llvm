@@ -273,6 +273,7 @@ void MachineOperand::ChangeToRegister(Register Reg, bool isDef, bool isImp,
   assert(!(isDead && !isDef) && "Dead flag on non-def");
   assert(!(isKill && isDef) && "Kill flag on def");
   assert(!(isUndef && isPublic) && "Public flag on undef");
+  assert(!(isDebug && isPublic) && "Public flag on debug");
   OpKind = MO_Register;
   SmallContents.RegNo = Reg;
   SubReg_TargetFlags = 0;

@@ -33,7 +33,7 @@ static std::array<Register, 5> AlwaysPublicRegisters = {
   X86::NoRegister, X86::RSP, X86::RIP, X86::SSP, X86::MXCSR,
 };
 
-bool isRegAlwaysPublic(Register Reg, const TargetRegisterInfo &TRI) {
+bool regAlwaysPublic(Register Reg, const TargetRegisterInfo &TRI) {
   if (Reg.isVirtual())
     return false;
   if (!Reg.isValid())
@@ -113,7 +113,7 @@ void PublicPhysRegs::stepBackward(const MachineInstr &MI) {
 }
 
 bool PublicPhysRegs::addReg(MCPhysReg PubReg) {
-  if (LPR.contains(PubReg) || X86::isRegAlwaysPublic(PubReg, *TRI))
+  if (LPR.contains(PubReg) || X86::regAlwaysPublic(PubReg, *TRI))
     return false;
 
   LPR.addReg(PubReg);
@@ -129,7 +129,7 @@ bool PublicPhysRegs::addRegs(const PublicPhysRegs &From) {
 
 bool PublicPhysRegs::isPublic(MCPhysReg Reg) const {
   // First, check if this register is always public.
-  if (X86::isRegAlwaysPublic(Reg, *TRI))
+  if (X86::regAlwaysPublic(Reg, *TRI))
     return true;
 
   // Otherwise, check if the entire register is in the pub-reg set.
@@ -212,7 +212,7 @@ void PrivacyTypeAnalysis::initPointerLoadsOrStores(MachineInstr &MI) {
 void PrivacyTypeAnalysis::initAlwaysPublicRegs(MachineInstr &MI) {
   const TargetRegisterInfo &TRI = *MI.getParent()->getParent()->getSubtarget().getRegisterInfo();
   for (MachineOperand &MO : MI.operands())
-    if (MO.isReg() && isRegAlwaysPublic(MO.getReg(), TRI))
+    if (MO.isReg() && regAlwaysPublic(MO.getReg(), TRI))
       MO.setIsPublic();  
 }
 
@@ -259,7 +259,9 @@ void PrivacyTypeAnalysis::initPointerCallArgs(MachineInstr &MI) {
       MachineOperand *MO = MI.findRegisterUseOperand(Pair.Reg);
       assert(MO && "Call doesn't use argument!");
       assert(MO->getReg() == Pair.Reg && "Call argument register mismatch!");
-      MO->setIsPublic();
+      assert(MO->isUse());
+      if (!MO->isUndef())
+        MO->setIsPublic();
     }
   }
 
@@ -293,7 +295,7 @@ void PrivacyTypeAnalysis::initPointerReturnValue(MachineInstr &MI) {
     return;
 
   for (MachineOperand &MO : MI.operands())
-    if (MO.isReg() && MO.isUse() && MO.isImplicit())
+    if (MO.isReg() && MO.isUse() && MO.isImplicit() && !MO.isUndef())
       MO.setIsPublic();
 }
 
@@ -469,8 +471,9 @@ bool BackwardPrivacyTypeAnalysis::block(MachineBasicBlock &MBB) {
 
 // Returns true if any of the instruction data operands are public.
 bool BackwardPrivacyTypeAnalysis::dataDefsPublic(const MachineInstr &MI) const {
+  const TargetRegisterInfo *TRI = MI.getParent()->getParent()->getSubtarget().getRegisterInfo();
   for (const MachineOperand &MO : MI.operands())
-    if (MO.isReg() && MO.isDef() && MO.isPublic() && !(MO.isImplicit() && registerIsAlwaysPublic(MO.getReg())))
+    if (MO.isReg() && MO.isDef() && MO.isPublic() && !(MO.isImplicit() && regAlwaysPublic(MO.getReg(), *TRI)))
       return true;
   return false;
 }

@@ -91,7 +91,7 @@ private:
 
   // TODO: Make another object that has MF and PrivTys as member.
   [[nodiscard]] bool instrumentPublicArguments(MachineFunction &MF, X86::PrivacyTypeAnalysis &PTA);
-  [[nodiscard]] bool instrumentPublicCalleeReturnValues(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
+  [[nodiscard]] bool instrumentPublicCalleeReturnValues(MachineFunction &MF);
   [[nodiscard]] bool eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
   [[nodiscard]] bool avoidPartialUpdatesOfPrivateEFLAGS(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
   void addPrivacyPrefixes(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
@@ -136,6 +136,7 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
   bool Changed = false;
 
   Changed |= instrumentPublicArguments(MF, PTA);
+  Changed |= instrumentPublicCalleeReturnValues(MF);
 
 #if 0
   if (Instrument) {
@@ -225,40 +226,31 @@ bool X86LLSCT::instrumentPublicArguments(MachineFunction &MF, X86::PrivacyTypeAn
   return MBB.begin() != MBBI;
 }
 
-bool X86LLSCT::instrumentPublicCalleeReturnValues(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys) {
+bool X86LLSCT::instrumentPublicCalleeReturnValues(MachineFunction &MF) {
   bool Changed = false;
-  const auto *TII = MF.getSubtarget().getInstrInfo();
-  
+  const TargetInstrInfo *TII = MF.getSubtarget().getInstrInfo();
+  const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+
   for (MachineBasicBlock &MBB : MF) {
     for (MachineInstr &MI : MBB) {
       if (MI.isCall()) {
-        const PrivacyMask &Privacy = PrivTys.getInstrPrivacyOut(&MI);
-        const auto CallMBBI = MI.getIterator();
-        auto NewMBBI_begin = [&] () {
-          return std::next(CallMBBI);
-        };
-        const auto NewMBBI_end = NewMBBI_begin();
-        llvm::SmallSet<Register, 1> ReturnRegs; // So we don't protect any registers twice.
+
+        const auto MBBIEnd = std::next(MI.getIterator());
         for (const MachineOperand &MO : MI.operands()) {
-          if (MO.isReg() && MO.isDef() && !MO.isDead()) {
-            const Register Reg = MO.getReg();
-            if (!X86::registerIsAlwaysPublic(Reg) && Privacy.get(Reg) == PubliclyTyped) {
-              if (ReturnRegs.insert(Reg).second) {
-                // The callee's return value is publicly-typed.
-                TII->copyPhysReg(MBB, NewMBBI_end, DebugLoc(), Reg, Reg, /*KillSrc*/true);
-              }
-            }
+          if (MO.isReg() && MO.isDef() && MO.isImplicit() && !MO.isDead() &&
+              MO.isPublic() && !X86::regAlwaysPublic(MO.getReg(), *TRI)) {
+            TII->copyPhysReg(MBB, MBBIEnd, DebugLoc(), MO.getReg(), MO.getReg(), /*KillSrc*/true);
           }
         }
 
-        // Update privacy for newly inserted instructions.
-        for (auto MBBI = NewMBBI_begin(); MBBI != NewMBBI_end; ++MBBI) {
-          MachineInstr *MI = &*MBBI;
-          PrivTys.getInstrPrivacyIn(MI) = Privacy;
-          PrivTys.getInstrPrivacyOut(MI) = Privacy;
-        }
+        const auto MBBIBegin = std::next(MI.getIterator());
+        for (auto MBBI = MBBIBegin; MBBI != MBBIEnd; ++MBBI)
+          for (MachineOperand &MO : MBBI->operands())
+            if (MO.isReg())
+              MO.setIsPublic();
 
-        Changed = (NewMBBI_begin() != NewMBBI_end);
+        Changed = MBBIBegin != MBBIEnd;
+
       }
     }
   }

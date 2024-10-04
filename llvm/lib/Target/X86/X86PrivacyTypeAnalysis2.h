@@ -63,6 +63,8 @@ inline raw_ostream &operator<<(raw_ostream &OS, const PublicPhysRegs &PubRegs) {
 
 namespace X86 {
 
+bool regAlwaysPublic(Register Reg, const TargetRegisterInfo &TRI);
+
 // TODO: Rename to 'BidirectionalPrivacyTypeAnalysis'.
 class PrivacyTypeAnalysis {
 public:
