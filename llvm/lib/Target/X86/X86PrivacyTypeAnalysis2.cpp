@@ -143,19 +143,12 @@ bool PublicPhysRegs::isPublic(MCPhysReg Reg) const {
   return false;
 }
 
-void PublicPhysRegs::getCover(SmallVectorImpl<MCPhysReg> &PubRegs) const {
-  assert(PubRegs.empty());
-  for (MCPhysReg MyPubReg : *this)
-    getCoverReg(PubRegs, MyPubReg);
-  assert(LPR.empty() == PubRegs.empty());
-}
-
-void PublicPhysRegs::getCoverReg(SmallVectorImpl<MCPhysReg> &PubRegs, MCPhysReg OurReg) const {
-  for (auto TheirRegIt = PubRegs.begin(); TheirRegIt != PubRegs.end(); ) {
+void impl::addRegToCover(MCPhysReg OurReg, SmallVectorImpl<MCPhysReg> &TheirRegs,
+                         const TargetRegisterInfo *TRI) {
+  for (auto TheirRegIt = TheirRegs.begin(); TheirRegIt != TheirRegs.end(); ) {
     const MCPhysReg TheirReg = *TheirRegIt;
-    assert(OurReg != TheirReg);
 
-    // If there's no overlap, skip.
+    // If there's no overlap, then skip.
     if (!TRI->regsOverlap(OurReg, TheirReg)) {
       ++TheirRegIt;
       continue;
@@ -168,14 +161,14 @@ void PublicPhysRegs::getCoverReg(SmallVectorImpl<MCPhysReg> &PubRegs, MCPhysReg 
     // If their register is a subset of our register, then remove their register from
     // the set before adding ours.
     if (TRI->isSubRegister(OurReg, TheirReg)) {
-      TheirRegIt = PubRegs.erase(TheirRegIt);
+      TheirRegIt = TheirRegs.erase(TheirRegIt);
     } else {
       ++TheirRegIt;
-    }
+    }      
   }
 
   // Add our register to the set.
-  PubRegs.push_back(OurReg);
+  TheirRegs.push_back(OurReg);
 }
 
 static void markOpPublic(MachineOperand &MO) {

@@ -1,6 +1,7 @@
 #include "X86PTeX.h"
 
 #include <optional>
+#include <set>
 
 // PTEX-TODO: Cull these includes.
 #include "X86.h"
@@ -18,6 +19,7 @@
 #include "llvm/Analysis/ValueTracking.h"
 #include "X86PrivacyTypeAnalysis.h"
 #include "X86PrivacyTypeAnalysis2.h"
+#include "X86LLSCTUtil.h"
 
 #define PTEX_DEBUG 1
 
@@ -90,13 +92,18 @@ private:
 
 
   // TODO: Make another object that has MF and PrivTys as member.
-  [[nodiscard]] bool instrumentPublicArguments(MachineFunction &MF, X86::PrivacyTypeAnalysis &PTA);
+  [[nodiscard]] bool instrumentPublicArguments(MachineFunction &MF, const X86::PrivacyTypeAnalysis &PTA);
   [[nodiscard]] bool instrumentPublicCalleeReturnValues(MachineFunction &MF);
-  [[nodiscard]] bool eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
+  [[nodiscard]] bool eliminatePrivateCSRs(MachineFunction &MF, const X86::PrivacyTypeAnalysis &PTA);
   [[nodiscard]] bool avoidPartialUpdatesOfPrivateEFLAGS(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
   void addPrivacyPrefixes(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
   std::optional<PrivacyType> computeInstrPrivacy(MachineInstr &MI, X86PrivacyTypeAnalysis &PrivTys);
   void annotateVirtualPointers(MachineFunction &MF);
+
+  [[nodiscard]] bool eliminatePrivateCSRsForCall(MachineInstr &MI, const PublicPhysRegs &PubRegs,
+                                                 auto GetSpillInfo);
+  void computePrivateCSRsToSpill(const MachineInstr &MI, const PublicPhysRegs &PubRegs,
+                                 SmallVectorImpl<MCPhysReg> &ToSpill);
 };
 
 }
@@ -137,6 +144,7 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
 
   Changed |= instrumentPublicArguments(MF, PTA);
   Changed |= instrumentPublicCalleeReturnValues(MF);
+  Changed |= eliminatePrivateCSRs(MF, PTA);
 
 #if 0
   if (Instrument) {
@@ -186,8 +194,9 @@ static bool unfoldLoads(MachineFunction &MF) {
 }
 #endif
 
-bool X86LLSCT::instrumentPublicArguments(MachineFunction &MF, X86::PrivacyTypeAnalysis &PTA) {
+bool X86LLSCT::instrumentPublicArguments(MachineFunction &MF, const X86::PrivacyTypeAnalysis &PTA) {
   const TargetInstrInfo *TII = MF.getSubtarget().getInstrInfo();
+  const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
   const MachineRegisterInfo &MRI = MF.getRegInfo();
   MachineBasicBlock &MBB = MF.front();
   auto MBBI = MBB.begin();
@@ -200,7 +209,7 @@ bool X86LLSCT::instrumentPublicArguments(MachineFunction &MF, X86::PrivacyTypeAn
   };
 
   SmallVector<MCPhysReg> PubRegs;
-  PTA.getIn(&MBB).getCover(PubRegs);
+  getRegisterCover(PTA.getIn(&MBB), PubRegs, TRI);
   
   for (MCPhysReg PubReg : PubRegs) {
     // Is this a callee-saved register?
@@ -305,11 +314,80 @@ int PrivateSpillInfo::getOrAllocateSpillSlot(Register Reg, MachineFunction &MF) 
   return FrameIndex;
 }
 
-bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys) {
+void X86LLSCT::computePrivateCSRsToSpill(const MachineInstr &MI, const PublicPhysRegs &PubRegs,
+                                         SmallVectorImpl<MCPhysReg> &ToSpill) {
+  assert(MI.isCall());  
+
+  const MachineFunction &MF = *MI.getParent()->getParent();
+  const MachineFrameInfo &MFI = MF.getFrameInfo();
+  const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+
+  // Private registers that require spilling are those that meet the following criteria:
+  //   - They are not pristine (see MachineFrameInfo::getPristineRegs()).
+  //   - They are private (i.e., not in PubRegs).
+  //   - They are callee-saved (i.e., they are in the MO_RegMask operand of the call).
+
+  // To start, let's generate the set of private registers to spill.
+  std::set<MCPhysReg> PrivateCSRs; // TODO: Should probably be bitset.
+  const auto CSRs = X86::util::get_call_regmask(MI);
+  for (MCPhysReg CSR = 0; CSR < CSRs.size(); ++CSR)
+    if (CSRs[CSR])
+      PrivateCSRs.insert(CSR);
+  // At this point, criterion 3 is met.
+  // Now, remove public CSRs.
+  for (MCPhysReg PubReg : PubRegs)
+    PrivateCSRs.erase(PubReg);
+  // Now, criterion 2 and 3 are met.
+  // Finally, remove pristine registers.
+#if 0
+  const auto PristineRegs = MFI.getPristineRegs(MF);
+  for (MCPhysReg PristineReg = 0; PristineReg < PristineRegs.size(); ++PristineReg)
+    if (PristineRegs[PristineReg])
+      PrivateCSRs.erase(PristineReg);
+#else
+  LivePhysRegs LPR(*TRI);
+  LPR.addLiveIns(*MI.getParent());
+  for (auto MBBI = MI.getParent()->begin(); MBBI != MI.getIterator(); ++MBBI) {
+    SmallVector<std::pair<MCPhysReg, const MachineOperand *>> Clobbers;
+    LPR.stepForward(*MBBI, Clobbers);
+  }
+  for (auto PrivateCSRIt = PrivateCSRs.begin(); PrivateCSRIt != PrivateCSRs.end(); ){
+    if (LPR.contains(*PrivateCSRIt)) {
+      ++PrivateCSRIt;
+    } else {
+      PrivateCSRIt = PrivateCSRs.erase(PrivateCSRIt);
+    }
+  }
+  // FIXME: This is not conservative. We need to also protect dead registers potentially.
+  // We might need to do a reaching def analysis or something like that.
+#endif
+
+  // Finally, compute the maximal cover.
+  getRegisterCover(PrivateCSRs, ToSpill, TRI);
+}
+
+bool X86LLSCT::eliminatePrivateCSRsForCall(MachineInstr &MI, const PublicPhysRegs &PubRegs, auto GetSpillInfo) {
+  assert(MI.isCall());
+
+  SmallVector<MCPhysReg> ToSpill;
+  computePrivateCSRsToSpill(MI, PubRegs, ToSpill);
+
+  if (!ToSpill.empty()) {
+    LLVM_DEBUG(dbgs() << "Spilling private CSRs");
+    for (MCPhysReg Reg : ToSpill)
+      LLVM_DEBUG(dbgs() << " " << MI.getParent()->getParent()->getSubtarget().getRegisterInfo()->getRegAsmName(Reg));
+    LLVM_DEBUG(dbgs() << " for call: " << MI);
+  }
+
+  return !ToSpill.empty();
+}
+
+bool X86LLSCT::eliminatePrivateCSRs(MachineFunction &MF, const X86::PrivacyTypeAnalysis &PTA) {
   bool Changed = false;
   const auto *TII = MF.getSubtarget().getInstrInfo();
   const auto *TRI = MF.getSubtarget().getRegisterInfo();
 
+  // TODO: This assertion really needs to be made much earlier on. Along with !isSSA().
   assert(MF.getRegInfo().tracksLiveness());
 
   std::map<const LandingPadInfo *, PrivateSpillInfo> InvokePrivateSpillInfo;
@@ -359,7 +437,8 @@ bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86Priv
     }
   }
 
-  auto getSpillInfo = [&] (MachineInstr *MI, Register Reg) -> PrivateSpillInfo * {
+  // TODO: It's super messy doing it this way.
+  auto GetSpillInfo = [&] (MachineInstr *MI, Register Reg) -> PrivateSpillInfo * {
     const auto InvokeToLandingPadIt = InvokeToLandingPad.find(MI);
     if (InvokeToLandingPadIt == InvokeToLandingPad.end()) {
       // Regular call.
@@ -385,24 +464,24 @@ bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86Priv
     return &CallPrivateSpillInfo[MI];
   };
 
-  // DEBUG
-  static int debug_min = -1;
-  static int debug_max = -1;
-  if (debug_min < 0) {
-    if (const char *s = std::getenv("MIN"))
-      debug_min = std::atoi(s);
-    else
-      debug_min = 0;
-  }
-  if (debug_max < 0) {
-    if (const char *s = std::getenv("MAX"))
-      debug_max = std::atoi(s);
-    else
-      debug_max = INT_MAX;
-  }
-  static int debug_cur = 0;
-
   for (MachineBasicBlock &MBB : MF) {
+    PublicPhysRegs PubRegs = PTA.getIn(&MBB);
+    for (MachineInstr &MI : MBB) {
+      if (MI.isCall())
+        Changed |= eliminatePrivateCSRsForCall(MI, PubRegs, GetSpillInfo);
+      PubRegs.stepForward(MI);
+    }
+  }
+
+  return Changed;
+
+  // =====================================================================
+
+#if 0 
+
+
+
+    
     LivePhysRegs LPR(*TRI);
     LPR.addLiveInsNoPristines(MBB);
     
@@ -549,6 +628,8 @@ bool X86LLSCT::eliminatePrivateCalleeSavedRegisters(MachineFunction &MF, X86Priv
   }
 
   return Changed;
+
+#endif
 }
 
 bool X86LLSCT::avoidPartialUpdatesOfPrivateEFLAGS(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys) {

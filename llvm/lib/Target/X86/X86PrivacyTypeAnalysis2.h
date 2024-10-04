@@ -49,17 +49,33 @@ public:
 
   PublicPhysRegs(const PublicPhysRegs &Other);
   PublicPhysRegs &operator=(const PublicPhysRegs &Other);
-
-  void getCover(SmallVectorImpl<MCPhysReg> &PubRegs) const;
-
-private:
-  void getCoverReg(SmallVectorImpl<MCPhysReg> &PubRegs, MCPhysReg OurReg) const;
 };
 
 inline raw_ostream &operator<<(raw_ostream &OS, const PublicPhysRegs &PubRegs) {
   PubRegs.print(OS);
   return OS;
 }
+
+namespace impl {
+void addRegToCover(MCPhysReg Reg, SmallVectorImpl<MCPhysReg> &Out,
+                   const TargetRegisterInfo *TRI);
+}
+
+template <class InputIt>
+void getRegisterCover(InputIt first, InputIt last, SmallVectorImpl<MCPhysReg> &Out,
+                      const TargetRegisterInfo *TRI) {
+  assert(Out.empty());
+  for (InputIt it = first; it != last; ++it)
+    impl::addRegToCover(*it, Out, TRI);
+  assert((first == last) == Out.empty());
+}
+
+template <class Container>
+void getRegisterCover(const Container &C, SmallVectorImpl<MCPhysReg> &Out,
+                      const TargetRegisterInfo *TRI) {
+  getRegisterCover(C.begin(), C.end(), Out, TRI);
+}
+
 
 namespace X86 {
 
