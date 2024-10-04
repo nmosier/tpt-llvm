@@ -104,6 +104,7 @@ private:
                                                  auto GetSpillInfo);
   void computePrivateCSRsToSpill(const MachineInstr &MI, const PublicPhysRegs &PubRegs,
                                  SmallVectorImpl<MCPhysReg> &ToSpill);
+  void spillPrivateCSR(MCPhysReg SpillReg, MachineInstr &MI, auto GetSpillInfo);
 };
 
 }
@@ -366,18 +367,43 @@ void X86LLSCT::computePrivateCSRsToSpill(const MachineInstr &MI, const PublicPhy
   getRegisterCover(PrivateCSRs, ToSpill, TRI);
 }
 
+// TODO: Change GetSpillInfo to std::function, at least.
+void X86LLSCT::spillPrivateCSR(MCPhysReg SpillReg, MachineInstr &MI, auto GetSpillInfo) {
+  MachineBasicBlock &MBB = *MI.getParent();
+  MachineFunction &MF = *MBB.getParent();
+  const auto &Subtarget = MF.getSubtarget();
+  const TargetRegisterInfo *TRI = Subtarget.getRegisterInfo();
+  const TargetInstrInfo *TII = Subtarget.getInstrInfo();
+  const auto *RegClass = TRI->getMinimalPhysRegClass(SpillReg);
+
+  // Allocate or get spill slot for register.
+  PrivateSpillInfo &PSI = *GetSpillInfo(&MI, SpillReg);
+  const int FrameIndex = PSI.getOrAllocateSpillSlot(SpillReg, MF);
+
+  // Store to spill slot before call.
+  // TODO: Should also check if it's live, once we start spilling dead registers.
+  if (!MI.isReturn()) {
+    // Insert store instruction.
+    errs() << "FIXME: Revert isKill=true\n";
+    TII->storeRegToStackSlot(MBB, MI.getIterator(), SpillReg, /*isKill*/false, FrameIndex, RegClass, TRI, X86::NoRegister);
+  }
+}
+
 bool X86LLSCT::eliminatePrivateCSRsForCall(MachineInstr &MI, const PublicPhysRegs &PubRegs, auto GetSpillInfo) {
   assert(MI.isCall());
 
+  // Collect registers to spill.
   SmallVector<MCPhysReg> ToSpill;
   computePrivateCSRsToSpill(MI, PubRegs, ToSpill);
-
   if (!ToSpill.empty()) {
     LLVM_DEBUG(dbgs() << "Spilling private CSRs");
     for (MCPhysReg Reg : ToSpill)
       LLVM_DEBUG(dbgs() << " " << MI.getParent()->getParent()->getSubtarget().getRegisterInfo()->getRegAsmName(Reg));
     LLVM_DEBUG(dbgs() << " for call: " << MI);
   }
+
+  for (MCPhysReg PrivateCSR : ToSpill)
+    spillPrivateCSR(PrivateCSR, MI, GetSpillInfo);
 
   return !ToSpill.empty();
 }
