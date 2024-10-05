@@ -37,7 +37,8 @@ public:
 
   void stepForward(const MachineInstr &MI);
   void stepBackward(const MachineInstr &MI);
-  void removeDefs(const MachineInstr &MI);
+  void removeAllDefs(const MachineInstr &MI);
+  void updateDefs(const MachineInstr &MI);
 
   // NOTE: Needs to check AlwaysPublicRegisters.
   bool isPublic(MCPhysReg Reg) const;
@@ -46,10 +47,12 @@ public:
   const_iterator end() const { return LPR.end(); }
 
   void print(raw_ostream &OS) const { LPR.print(OS); } 
-  void dump() const { LPR.dump(); }
+  void dump() const;
 
   PublicPhysRegs(const PublicPhysRegs &Other);
   PublicPhysRegs &operator=(const PublicPhysRegs &Other);
+
+  void addPublicUses(const MachineInstr &MI);
 };
 
 inline raw_ostream &operator<<(raw_ostream &OS, const PublicPhysRegs &PubRegs) {
@@ -77,6 +80,7 @@ void getRegisterCover(const Container &C, SmallVectorImpl<MCPhysReg> &Out,
   getRegisterCover(C.begin(), C.end(), Out, TRI);
 }
 
+bool setInstrPublic(MachineInstr &MI);
 
 namespace X86 {
 
@@ -109,9 +113,12 @@ private:
   void initPointerCallArgs(MachineInstr &MI);
   void initPointerTypes(MachineInstr &MI);
   void initPointerReturnValue(MachineInstr &MI);
+  void initPublicInstr(MachineInstr &MI);
+  void initGOTLoads(MachineInstr &MI);
 
   bool forward();
   bool backward();
+  bool stack();
 };
 
 template <class Base>
@@ -144,6 +151,8 @@ protected:
   // Process each block, returning whether a change occurred.
   virtual bool block(MachineBasicBlock &MBB) = 0;
 
+  virtual StringRef getName() const = 0;
+
 private:
   void mergeIntoParent();
 
@@ -160,13 +169,14 @@ class ForwardPrivacyTypeAnalysis final : public DirectionalPrivacyTypeAnalysis<F
   bool block(MachineBasicBlock &MBB) override;
   bool instruction(MachineInstr &MI, PublicPhysRegs &PubRegs);
   bool dataUsesPublic(const MachineInstr &MI, const PublicPhysRegs &PubRegs) const;
+  StringRef getName() const override { return "fwd-privacy"; }
 
 public:
   ForwardPrivacyTypeAnalysis(MachineFunction &MF, PubMap &ParentIn, PubMap &ParentOut) :
       DirectionalPrivacyTypeAnalysis(MF, ParentIn, ParentOut) {}
 
 protected:
-  auto blocks() const { return llvm::inverse_post_order(&MF); }
+  auto blocks() const { return ReversePostOrderTraversal<MachineFunction *>(&MF); }
 };
 
 class BackwardPrivacyTypeAnalysis final : public DirectionalPrivacyTypeAnalysis<BackwardPrivacyTypeAnalysis> {
@@ -176,6 +186,7 @@ class BackwardPrivacyTypeAnalysis final : public DirectionalPrivacyTypeAnalysis<
   bool instruction(MachineInstr &MI, PublicPhysRegs &PubRegs);
   bool dataDefsPublic(const MachineInstr &MI) const; // TODO: Make this static instead.
   auto blocks() const { return llvm::post_order(&MF); }
+  StringRef getName() const override { return "bwd-privacy"; }
   
 public:
   BackwardPrivacyTypeAnalysis(MachineFunction &MF, PubMap &ParentIn, PubMap &ParentOut) :
@@ -183,6 +194,16 @@ public:
 
 };
 
+class StackPrivacyAnalysis {
+  MachineFunction &MF;
+
+public:
+  StackPrivacyAnalysis(MachineFunction &MF): MF(MF) {}
+  bool run();
+
+private:
+  bool spillSlot(int SpillSlot, ArrayRef<MachineInstr *> Stores, ArrayRef<MachineInstr *> Loads);
+};
 
 }
 

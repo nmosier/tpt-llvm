@@ -75,6 +75,16 @@ void X86MCInstLowerTPE(const MachineInstr *MI, MCInst& OutMI) {
 
   LLVM_DEBUG(dbgs() << "Adding PROT prefix to " << *MI);
   addFlag(X86::IP_TPE_PRIVM);
+
+  if (std::getenv("PTEX_VERBOSE"))
+    errs() << "Adding PROT prefix: " << *MI;
+
+  // DEBUG
+  if (MI->getOpcode() == X86::LEA64r || MI->getOpcode() == X86::LEA64_32r) {
+    assert(llvm::any_of(MI->operands(), [] (const auto &MO) {
+      return MO.isReg() && MO.isUse() && !MO.isPublic();
+    }));
+  }
 }
   
 }

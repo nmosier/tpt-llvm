@@ -11,6 +11,7 @@
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "X86RegisterInfo.h"
 #include "X86Subtarget.h"
+#include "llvm/CodeGen/MachineFrameInfo.h"
 
 #define unimplemented() \
   do {                                                      \
@@ -20,9 +21,24 @@
     report_fatal_error(s.c_str());                          \
   } while (false)
 
-#define DEBUG_TYPE "x86-ptex"
+#define PASS_KEY "x86-ptex"
+#define DEBUG_TYPE PASS_KEY
 
 using namespace llvm;
+
+static cl::opt<bool> EnableStackPrivacyAnalysis {
+  PASS_KEY "-stack",
+  cl::desc("[PTeX] Enable stack privacy analysis"),
+  cl::init(true),
+  cl::Hidden,
+};
+
+static cl::opt<bool> FullDefDeclassification {
+  PASS_KEY "-defs",
+  cl::desc("[PTeX] Mark def'ed registers public if any subregister is marked public"),
+  cl::init(true),
+  cl::Hidden,
+};
 
 namespace llvm {
 
@@ -46,11 +62,61 @@ bool regAlwaysPublic(Register Reg, const TargetRegisterInfo &TRI) {
 
 }
 
+bool setInstrPublic(MachineInstr &MI) {
+  bool Changed = false;
+
+  // Mark instruction itself as public.
+  if (!MI.getFlag(MachineInstr::TPEPubM)) {
+    MI.setFlag(MachineInstr::TPEPubM);
+    Changed = true;
+  }
+
+  // Mark each register operand as public.
+  for (MachineOperand &MO : MI.operands()) {
+    if (MO.isReg() && !MO.isUndef() && !MO.isPublic()) {
+      MO.setIsPublic();
+      Changed = true;
+    }
+  }
+
+  return Changed;
+}
+
+[[nodiscard]] static bool syncOperands(PublicPhysRegs &PubRegs, MachineInstr &MI, auto Pred) {
+  // TODO: Experiment with also marking changed if we add a new register to PubRegs.
+  bool Changed = false;
+  for (MachineOperand &MO : MI.operands()) {
+    if (MO.isReg() && !MO.isUndef() && Pred(MO)) {
+      const bool PubMO = MO.isPublic();
+      const bool PubReg = PubRegs.isPublic(MO.getReg());
+      if (PubMO && !PubReg) {
+        PubRegs.addReg(MO.getReg());
+      } else if (!PubMO && PubReg) {
+        MO.setIsPublic();
+        Changed = true;
+      }
+    }
+  }
+  return Changed;
+}
+
+[[nodiscard]] static bool syncUses(PublicPhysRegs &PubRegs, MachineInstr &MI) {
+  return syncOperands(PubRegs, MI, std::mem_fn(&MachineOperand::isUse));
+}
+
+[[nodiscard]] static bool syncDefs(PublicPhysRegs &PubRegs, MachineInstr &MI) {
+  return syncOperands(PubRegs, MI, std::mem_fn(&MachineOperand::isDef));
+}
+
 PublicPhysRegs::PublicPhysRegs(const PublicPhysRegs &Other) {
   TRI = Other.TRI;
   assert(TRI);
   LPR.init(*TRI);
   addRegs(Other);
+}
+
+void PublicPhysRegs::dump() const {
+  print(errs());
 }
 
 PublicPhysRegs &PublicPhysRegs::operator=(const PublicPhysRegs &Other) {
@@ -77,46 +143,40 @@ bool PublicPhysRegs::intersect(const PublicPhysRegs &Other) {
   return !RemoveRegs.empty();
 }
 
-void PublicPhysRegs::stepForward(const MachineInstr &MI) {
-  // First, add in any operands that are marked public.
+void PublicPhysRegs::addPublicUses(const MachineInstr &MI) {
   for (const MachineOperand &MO : MI.operands())
     if (MO.isReg() && MO.isUse() && MO.isPublic())
       addReg(MO.getReg());
-  
-  // Then, use LPR's stepForward to remove defs and clobbers.
-  // However, this adds all (non-dead) defs to the set, which we don't want.
-  // So we need to remove all non-public defs afterwards.
-  SmallVector<std::pair<MCPhysReg, const MachineOperand *>> Clobbers;
-  LPR.stepForward(MI, Clobbers);
+}
 
-  // Remove all non-public defs that LPR.stepForward() added.
-  for (const MachineOperand &MO : MI.operands())
-    if (MO.isReg() && MO.isDef() && !MO.isPublic())
-      LPR.removeReg(MO.getReg()); // TODO: Use our version of removeReg if added.
+void PublicPhysRegs::stepForward(const MachineInstr &MI) {
+  // First, add in any operands that are marked public.
+  addPublicUses(MI);
+
+  // Then update defs.
+  updateDefs(MI);
 }
 
 void PublicPhysRegs::stepBackward(const MachineInstr &MI) {
-#if 0
-  // NOTE: This is stupid. stepBackward() removes them anyway.
-  // First, add in any defs that are marked public.
+  // Remove defined registers and regmask kills from the set.
+  removeAllDefs(MI);
+
+  // Add any public uses.
+  addPublicUses(MI);
+}
+
+void PublicPhysRegs::removeAllDefs(const MachineInstr &MI) {
+  LPR.removeDefs(MI);
+}
+
+void PublicPhysRegs::updateDefs(const MachineInstr &MI) {
+  // First, remove all defs.
+  LPR.removeDefs(MI);
+
+  // Add back in any public defs.
   for (const MachineOperand &MO : MI.operands())
     if (MO.isReg() && MO.isDef() && MO.isPublic())
       addReg(MO.getReg());
-#endif
-
-  // Then, use LPR's stepBackwartd to remove defs and clobbers.
-  // However, this adds all (non-undef'ed) uses to the set, which we don't want.
-  // So we need to remove all non-public uses afterwards.
-  LPR.stepBackward(MI);
-
-  // Remove all non-public uses.
-  for (const MachineOperand &MO : MI.operands())
-    if (MO.isReg() && MO.isUse() && !MO.isPublic())
-      LPR.removeReg(MO.getReg()); // TODO: Use our version of removeReg if added.
-}
-
-void PublicPhysRegs::removeDefs(const MachineInstr &MI) {
-  LPR.removeDefs(MI);
 }
 
 bool PublicPhysRegs::addReg(MCPhysReg PubReg) {
@@ -295,8 +355,30 @@ void PrivacyTypeAnalysis::initPointerReturnValue(MachineInstr &MI) {
     return;
 
   for (MachineOperand &MO : MI.operands())
-    if (MO.isReg() && MO.isUse() && MO.isImplicit() && !MO.isUndef())
+    if (MO.isReg() && MO.isUse() && !MO.isUndef())
       MO.setIsPublic();
+}
+
+void PrivacyTypeAnalysis::initPublicInstr(MachineInstr &MI) {
+  if (MI.getFlag(MachineInstr::TPEPubM))
+    for (MachineOperand &MO : MI.operands())
+      if (MO.isReg() && !MO.isUndef())
+        MO.setIsPublic();
+}
+
+void PrivacyTypeAnalysis::initGOTLoads(MachineInstr &MI) {
+  if (!MI.mayLoad())
+    return;
+
+  // Are any operands x86-gotpcrel GlobalAddresses?
+  const bool HasGotpcrelMO = llvm::any_of(MI.operands(), [] (const MachineOperand &MO) {
+    return MO.getTargetFlags() == X86II::MO_GOTPCREL;
+  });
+  if (!HasGotpcrelMO)
+    return;
+
+  // Yes. Such accesses always return pointers.
+  setInstrPublic(MI);
 }
 
 void PrivacyTypeAnalysis::init() {
@@ -312,6 +394,8 @@ void PrivacyTypeAnalysis::init() {
       initPointerCallArgs(MI);
       initPointerTypes(MI);
       initPointerReturnValue(MI);
+      initPublicInstr(MI);
+      initGOTLoads(MI);
     }
   }
 
@@ -332,18 +416,28 @@ bool PrivacyTypeAnalysis::backward() {
   return Backward.run();
 }
 
+bool PrivacyTypeAnalysis::stack() {
+  StackPrivacyAnalysis Stack(MF);
+  return Stack.run();
+}
+
 bool PrivacyTypeAnalysis::run() {
   init();
 
-  bool Changed = false;
-  bool FwdChange, BwdChange;
+  bool OverallChanged = false;
+  bool IterChanged;
   do {
-    FwdChange = forward();
-    BwdChange = backward();
-    Changed |= FwdChange || BwdChange;
-  } while (FwdChange || BwdChange);
+    IterChanged = false;
 
-  return Changed;
+    IterChanged |= forward();
+    IterChanged |= backward();
+    if (EnableStackPrivacyAnalysis)
+      IterChanged |= stack();
+
+    OverallChanged |= IterChanged;
+  } while (IterChanged);
+
+  return OverallChanged;
 }
 
 void ForwardPrivacyTypeAnalysis::init() {
@@ -356,6 +450,7 @@ void ForwardPrivacyTypeAnalysis::init() {
 
     // Optimistically initialize the pub-ins and pub-outs to the live-ins and live-outs
     // of all other blocks.
+    // TODO: Need to change this.
     In[&MBB].addLiveIns(MBB);
     Out[&MBB].addLiveOuts(MBB);
 
@@ -392,7 +487,7 @@ bool ForwardPrivacyTypeAnalysis::dataUsesPublic(const MachineInstr &MI, const Pu
     return false;
 
   for (const MachineOperand &MO : MI.operands())
-    if (MO.isReg() && MO.isUse()  && !MO.isUndef() && !PubRegs.isPublic(MO.getReg()))
+    if (MO.isReg() && MO.isUse()  && !MO.isUndef() && !MO.isPublic() && !PubRegs.isPublic(MO.getReg()))
       return false;
 
   return true;
@@ -401,32 +496,18 @@ bool ForwardPrivacyTypeAnalysis::dataUsesPublic(const MachineInstr &MI, const Pu
 bool ForwardPrivacyTypeAnalysis::instruction(MachineInstr &MI, PublicPhysRegs &PubRegs) {
   bool Changed = false;
 
-  // To start, if any (non-undef'ed) uses are public, then mark the operand public.
-  for (MachineOperand &MO : MI.operands()) {
-    if (MO.isReg() && MO.isUse() && !MO.isUndef() && PubRegs.isPublic(MO.getReg()) && !MO.isPublic()) {
-      MO.setIsPublic();
-      Changed = true;
-    }
-  }
+  // Sync PubRegs -> MO uses.
+  Changed |= syncUses(PubRegs, MI);
+
+  // Check if data inputs are public.
+  // If so, mark instruction public.
+  if (dataUsesPublic(MI, PubRegs) && !MI.isCall())
+    Changed |= setInstrPublic(MI);
 
   // Step forward.
-  // TODO: Don't think we need PubRegs here. We can just look at the operands.
-  const bool DefsPublic = dataUsesPublic(MI, PubRegs) && !MI.isCall();
-  PubRegs.stepForward(MI); // NOTE: This doesn't know about DefsPublic; need to manually add them.
-
-  // Mark defs public.
-  if (DefsPublic) {
-    for (MachineOperand &MO : MI.operands()) {
-      if (MO.isReg() && MO.isDef() && !MO.isUndef() && !MO.isPublic()) {
-        PubRegs.addReg(MO.getReg());
-        MO.setIsPublic();
-        Changed = true;
-      }
-    }
-  }
+  PubRegs.stepForward(MI);
 
   ParentChanged |= Changed;
-
   return Changed;
 }
 
@@ -480,38 +561,37 @@ bool BackwardPrivacyTypeAnalysis::dataDefsPublic(const MachineInstr &MI) const {
 
 bool BackwardPrivacyTypeAnalysis::instruction(MachineInstr &MI, PublicPhysRegs &PubRegs) {
   bool Changed = false;
+  const TargetRegisterInfo *TRI = MI.getParent()->getParent()->getSubtarget().getRegisterInfo();
 
-  // To start, if any defs are public, then mark the operand public.
-  for (MachineOperand &MO : MI.operands()) {
-    if (MO.isReg() && MO.isDef() && !MO.isUndef() && PubRegs.isPublic(MO.getReg()) && !MO.isPublic()) {
-      MO.setIsPublic();
-      Changed = true;
-    }
-  }
-
-  // Step backward.
-  const bool MarkUsesPublic = dataDefsPublic(MI) && !MI.isCall();
-#if 0
-  PubRegs.stepBackward(MI);
-#else
-  PubRegs.removeDefs(MI);
-#endif
-
-  // Mark uses public.
-  for (MachineOperand &MO : MI.operands()) {
-    if (MO.isReg() && MO.isUse() && !MO.isUndef()) {
-      if (MO.isPublic()) {
-        PubRegs.addReg(MO.getReg());
-      } else if (MarkUsesPublic || PubRegs.isPublic(MO.getReg())) {
-        PubRegs.addReg(MO.getReg());
-        MO.setIsPublic();
-        Changed = true;
+  if (FullDefDeclassification) {
+    for (MachineOperand &MO : MI.operands()) {
+      if (MO.isReg() && MO.isDef() && !MO.isUndef() && !MO.isPublic()) {
+        // Is a subregister public?
+        const bool SubregPublic = llvm::any_of(TRI->subregs(MO.getReg()), [&] (MCPhysReg SubReg) -> bool {
+          return PubRegs.isPublic(SubReg);
+        });
+        if (SubregPublic) {
+          MO.setIsPublic();
+          Changed = true;
+        }
       }
     }
   }
 
-  ParentChanged |= Changed;
+  // Sync PubRegs -> MO defs.
+  Changed |= syncDefs(PubRegs, MI);
 
+  // If the data defs are public, then mark the instruction public.
+  if (dataDefsPublic(MI) && !MI.isCall())
+    Changed |= setInstrPublic(MI);
+
+  // Step backward.
+  PubRegs.stepBackward(MI);
+
+  // Sync PubRegs -> MO uses.
+  Changed |= syncUses(PubRegs, MI);
+
+  ParentChanged |= Changed;
   return Changed;
 }
 
@@ -574,6 +654,58 @@ void PrivacyTypeAnalysis::print(raw_ostream &os) const {
     os << "    // public: " << PubRegs;
     os << "    // pub-out: " << Out.at(&MBB);
   }
+}
+
+bool StackPrivacyAnalysis::run() {
+  const MachineFrameInfo &MFI = MF.getFrameInfo();
+  const TargetInstrInfo *TII = MF.getSubtarget().getInstrInfo();
+
+  // First, create a map from spill slots to stack spill/restore instructions.
+  struct SpillSlotInfo {
+    SmallVector<MachineInstr *> Stores;
+    SmallVector<MachineInstr *> Loads;
+  };
+  std::map<int, SpillSlotInfo> SpillSlotInfos;
+  for (MachineBasicBlock &MBB : MF) {
+    for (MachineInstr &MI : MBB) {
+      int FrameIndex;
+      if (TII->isStoreToStackSlot(MI, FrameIndex)) {
+        SpillSlotInfos[FrameIndex].Stores.push_back(&MI);
+      } else if (TII->isLoadFromStackSlot(MI, FrameIndex)) {
+        SpillSlotInfos[FrameIndex].Loads.push_back(&MI);
+      }
+    }
+  }
+
+  // Then, process loads/stores from each spill slot.
+  bool Changed = false;
+  for (const auto &[FrameIndex, SpillInfo] : SpillSlotInfos)
+    if (MFI.isSpillSlotObjectIndex(FrameIndex))
+      Changed |= spillSlot(FrameIndex, SpillInfo.Stores, SpillInfo.Loads);
+
+  return Changed;
+}
+
+bool StackPrivacyAnalysis::spillSlot(int SpillSlot, ArrayRef<MachineInstr *> Stores, ArrayRef<MachineInstr *> Loads) {
+  bool Changed = false;
+
+  // TODO: 'undef' doesn't always mean the instruction operands independently of it.
+  // It can also mean that the register has a poison value.
+  bool AllStoresPublic = true;
+  for (const MachineInstr *MI : Stores)
+    for (const MachineOperand &MO : MI->operands())
+      if (MO.isReg() && MO.isUse() && !MO.isUndef())
+        AllStoresPublic &= MO.isPublic();
+
+  // Forward Analysis: Are all stores public? If so, mark all loads public.
+  if (AllStoresPublic)
+    for (MachineInstr *MI : Loads)
+      Changed |= setInstrPublic(*MI);
+
+  // Backward analysis is harder, since we need to be conservative.
+  // It's not as simple as marking all stores public if all loads are public.
+
+  return Changed;
 }
 
 }

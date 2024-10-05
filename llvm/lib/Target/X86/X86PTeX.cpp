@@ -98,20 +98,11 @@ public:
 private:
   const bool Instrument;
   
-  // Ensures that register types only transition from private->public
-  // if the register is the output of an instruction.
-  // Achieves this by inserting register moves around any violations.
-  // Returns whether any instructions were inserted, i.e., whether it
-  // changed the function.
-  void validatePrivacyTypes(MachineFunction &MF, const X86PrivacyTypeAnalysis &PTA);
-
-
   // TODO: Make another object that has MF and PrivTys as member.
   [[nodiscard]] bool instrumentPublicArguments(MachineFunction &MF, const X86::PrivacyTypeAnalysis &PTA);
   [[nodiscard]] bool instrumentPublicCalleeReturnValues(MachineFunction &MF);
   [[nodiscard]] bool eliminatePrivateCSRs(MachineFunction &MF, const X86::PrivacyTypeAnalysis &PTA);
   [[nodiscard]] bool avoidPartialUpdatesOfPrivateEFLAGS(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
-  void addPrivacyPrefixes(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
   std::optional<PrivacyType> computeInstrPrivacy(MachineInstr &MI, X86PrivacyTypeAnalysis &PrivTys);
   void annotateVirtualPointers(MachineFunction &MF);
 
@@ -120,6 +111,9 @@ private:
   void computePrivateCSRsToSpill(const MachineInstr &MI, const PublicPhysRegs &PubRegs,
                                  SmallVectorImpl<MCPhysReg> &ToSpill);
   MCPhysReg spillPrivateCSR(MCPhysReg SpillReg, MachineInstr &MI, auto GetSpillInfo);
+
+  void validate(MachineFunction &MF, const X86::PrivacyTypeAnalysis &PTA);
+  void validateInstr(const MachineInstr &MF);
 };
 
 }
@@ -144,6 +138,9 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
   if (X86::DumpPTeX(MF))
     PTA.print(errs());
 
+  // Validate
+  validate(MF, PTA);
+
   // If we're not instrumenting the code, then just return.
   if (!Instrument)
     return false;
@@ -166,7 +163,7 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
   if (!X86::DumpDir.getValue().empty()) {
     std::string path;
     raw_string_ostream path_ss(path);
-    path_ss << X86::DumpDir.getValue() << "/" << MF.getName() << ".mir";
+    path_ss << X86::DumpDir.getValue() << "/" << MF.getName().take_front(128) << ".mir";
     std::error_code EC;
     raw_fd_ostream os(path, EC);
     assert(!EC);
@@ -193,9 +190,6 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
     // Step 5: Heuristically avoid partial updates of privately-typed EFLAGS.
     Changed |= avoidPartialUpdatesOfPrivateEFLAGS(MF, PrivacyTypes);
   }
-
-  // Mark instructions as public/private.
-  addPrivacyPrefixes(MF, PrivacyTypes);  
   
   // TODO: Verify some properties, like that there are no privately-typed callee-saved registers.
 #endif
@@ -937,72 +931,121 @@ std::optional<PrivacyType> X86LLSCT::computeInstrPrivacy(MachineInstr &MI, X86Pr
   return std::nullopt;
 }
 
-void X86LLSCT::addPrivacyPrefixes(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys) {
-  for (MachineBasicBlock &MBB : MF) {
-    for (MachineInstr &MI : MBB) {
-      const std::optional<PrivacyType> InstrPrivTy = computeInstrPrivacy(MI, PrivTys);
-      if (!InstrPrivTy)
-        continue;
-      X86::setInstrPrivacy(MI, *InstrPrivTy);
-    }
-  }
-}
+static void annotateVirtualPointersInstr(MachineInstr &MI, const MachineRegisterInfo &MRI) {
+  // Check if this instruction has any pointer-typed data operands.
+  auto IsVirtPtrData = [&] (const MachineOperand &MO) -> bool {
+    // Is it a pointer-typed virtual register?
+    if (!(MO.isReg() && MRI.getType(MO.getReg()).isPointer()))
+      return false;
 
-static bool mayPartiallyUpdateEFLAGS(const MachineInstr &MI) {
-#if 0
-  // Consider calls and returns to partially update EFLAGS.
-  if (MI.isCall() || MI.isReturn())
+    // Is this an address operand, not a data operand?
+    if (MI.mayLoadOrStore())
+      if (const int MemIdx = X86::getMemRefBeginIdx(MI); MemIdx >= 0)
+        for (int i = MemIdx; i < MemIdx + X86::AddrNumOperands; ++i)
+          if (&MO == &MI.getOperand(i))
+            return false;
+
+    // It's a data operand.
     return true;
-#endif
-  
-  // If EFLAGS is not def'ed, then it doesn't update EFLAGS, period.
-  if (llvm::none_of(MI.operands(), [] (const MachineOperand &MO) -> bool {
-    return MO.isReg() && MO.getReg() == X86::EFLAGS && MO.isDef();
-  })) {
-    return false;
-  }
+  };
 
-  switch (MI.getOpcode()) {
-#define CASE(s) case X86::s:
-#define SHIFT_SUFFIX(s) CASE(s##1) CASE(s##CL) CASE(s##i)
-#define SHIFT_DST(s) SHIFT_SUFFIX(s##m) SHIFT_SUFFIX(s##r)
-#define SHIFT(s) SHIFT_DST(s##8) SHIFT_DST(s##16) SHIFT_DST(s##32) SHIFT_DST(s##64)
-    SHIFT(SAR);
-    SHIFT(SHL);
-    SHIFT(SHR);
-    return true;
+  // Does this instruction have any pointer-typed data operands?
+  if (!llvm::any_of(MI.operands(), IsVirtPtrData))
+    return;
 
-  case X86::DEC8r:
-  case X86::DEC16r:
-  case X86::DEC32r:
-  case X86::DEC64r:
-  case X86::INC8r:
-  case X86::INC16r:
-  case X86::INC32r:
-  case X86::INC64r:
-    return true;
-
-  default:
-    return false;
-  }
+  // Yes, it does. Mark instruction public.
+  setInstrPublic(MI);
+  LLVM_DEBUG(dbgs() << "PTeX.LLT: marking instruction public: " << MI);
 }
 
 void X86LLSCT::annotateVirtualPointers(MachineFunction &MF) {
   const MachineRegisterInfo &MRI = MF.getRegInfo();
+  for (MachineBasicBlock &MBB : MF)
+    for (MachineInstr &MI : MBB)
+      annotateVirtualPointersInstr(MI, MRI);
+  MF.getRegInfo().clearVirtRegTypes();
+}
+
+void X86LLSCT::validate(MachineFunction &MF, const X86::PrivacyTypeAnalysis &PTA) {
+  const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+  
+  // If an explicit output is public, then all implicit outputs should be public.
   for (MachineBasicBlock &MBB : MF) {
     for (MachineInstr &MI : MBB) {
-      for (MachineOperand &MO : MI.operands()) {
-        // PTEX-FIXME: MI.mayLoadOrStore() is too aggressive.
-        // We do care about stores that have a pointer operand.
-        if (MO.isReg() && !MO.isImplicit() && MRI.getType(MO.getReg()).isPointer() &&
-            (MO.isDef() || (MO.isUse() && !MI.mayLoadOrStore()))) {
-          MO.setIsPublic();
-          LLVM_DEBUG(dbgs() << "PTeX.LLT: marking instruction operand '" << MO << "' public: " << MI);
-        }
+      const bool ExplicitOutputPublic = llvm::any_of(MI.operands(), [] (const MachineOperand &MO) -> bool {
+        return MO.isReg() && MO.isDef() && !MO.isImplicit() && MO.isPublic();
+      });
+      if (ExplicitOutputPublic) {
+        for (const MachineOperand &MO : MI.operands())
+          if (MO.isReg() && MO.isDef() && MO.isImplicit())
+            assert(MO.isPublic());
       }
     }
   }
-  MF.getRegInfo().clearVirtRegTypes();
+
+  // Our PublicPhysRegs iterator should be precise.
+  for (MachineBasicBlock &MBB : MF) {
+    PublicPhysRegs PubRegs = PTA.getIn(&MBB);
+
+    // FIXME: Should re-enable this in some capacity.
+    // The issue is that block live-ins are imperfect themselves.
+#if 0
+    for (const MachineInstr &MI : MBB) {
+      // Ensure that all public uses are marked public in PubRegs.
+      for (const MachineOperand &MO : MI.operands())
+        if (MO.isReg() && MO.isUse() && MO.isPublic())
+          assert(PubRegs.isPublic(MO.getReg())
+                 && "Public register use is not marked public in PublicPhysRegs");
+      PubRegs.stepForward(MI);
+    }
+#endif
+
+    // FIXME: Re-enable later.
+#if 0
+    PubRegs = PTA.getOut(&MBB);
+    for (const MachineInstr &MI : llvm::reverse(MBB)) {
+      // Ensure that all public defs are marked public in PubRegs.
+      for (const MachineOperand &MO : MI.operands())
+        if (MO.isReg() && MO.isDef() && MO.isPublic() && !MO.isDead())
+          assert(PubRegs.isPublic(MO.getReg())
+                 && "Public register def is not marked public in PublicPhysRegs");
+      PubRegs.stepBackward(MI);
+    }
+#endif
+
+    for (const MachineInstr &MI : MBB)
+      validateInstr(MI);
+  }
+}
+
+void X86LLSCT::validateInstr(const MachineInstr &MI) {
+  const TargetRegisterInfo *TRI = MI.getParent()->getParent()->getSubtarget().getRegisterInfo();
+
+  // Validate always-public operands.
+  for (const MachineOperand &MO : MI.operands())
+    if (MO.isReg() && X86::regAlwaysPublic(MO.getReg(), *TRI))
+      assert(MO.isPublic() && "Operand with always-public register was not marked public!");
+  
+  // Validate LEAs.
+  switch (MI.getOpcode()) {
+  case X86::LEA64r:
+  case X86::LEA32r:
+  case X86::LEA64_32r:
+  case X86::LEA16r:
+    {
+      const bool DefPublic = llvm::any_of(MI.operands(), [] (const MachineOperand &MO) -> bool {
+        return MO.isReg() && MO.isDef() && !MO.isImplicit() && MO.isPublic();
+      });
+      if (!DefPublic) {
+        const bool UsePrivate = llvm::any_of(MI.operands(), [] (const MachineOperand &MO) -> bool {
+          return MO.isReg() && MO.isUse() && !MO.isImplicit() && !MO.isPublic();
+        });
+        assert(UsePrivate && "Found a no private uses for a private LEA!");
+      }
+    }
+    break;
+  default: break;
+  }
 }
 
 INITIALIZE_PASS_BEGIN(X86LLSCT, PASS_KEY "-pass",
