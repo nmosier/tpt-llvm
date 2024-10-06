@@ -68,6 +68,13 @@ static cl::opt<std::string> DumpDir {
   cl::Hidden,
 };
 
+static cl::opt<bool> DeclassifyBlockEntries {
+  PASS_KEY "-block-regs",
+  cl::desc("[PTeX] Insert dummy register moves to mark newly registers public on basic block entry"),
+  cl::init(true),
+  cl::Hidden,
+};
+
 bool EnablePTeX() {
   return static_cast<bool>(EnablePTeXOpt);
 }
@@ -103,6 +110,7 @@ private:
   [[nodiscard]] bool instrumentPublicCalleeReturnValues(MachineFunction &MF);
   [[nodiscard]] bool eliminatePrivateCSRs(MachineFunction &MF, const X86::PrivacyTypeAnalysis &PTA);
   [[nodiscard]] bool avoidPartialUpdatesOfPrivateEFLAGS(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
+  [[nodiscard]] bool declassifyBlockEntries(MachineBasicBlock &MBB, const X86::PrivacyTypeAnalysis &PTA);
   std::optional<PrivacyType> computeInstrPrivacy(MachineInstr &MI, X86PrivacyTypeAnalysis &PrivTys);
   void annotateVirtualPointers(MachineFunction &MF);
 
@@ -157,6 +165,8 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
 
   Changed |= instrumentPublicArguments(MF, PTA);
   Changed |= instrumentPublicCalleeReturnValues(MF);
+  for (MachineBasicBlock &MBB : MF)
+    Changed |= declassifyBlockEntries(MBB, PTA);
   if (X86::EliminatePrivateCSRs)
     Changed |= eliminatePrivateCSRs(MF, PTA);
 
@@ -1046,6 +1056,39 @@ void X86LLSCT::validateInstr(const MachineInstr &MI) {
     break;
   default: break;
   }
+}
+
+bool X86LLSCT::declassifyBlockEntries(MachineBasicBlock &MBB, const X86::PrivacyTypeAnalysis &PTA) {
+  // TODO: Make TRI, TII members.
+  const TargetRegisterInfo *TRI = MBB.getParent()->getSubtarget().getRegisterInfo();
+  const TargetInstrInfo *TII = MBB.getParent()->getSubtarget().getInstrInfo();
+
+  // Find any registers that are private in a predecessor but public-in to this block.
+  // Essentially, take the intersection of this block's pub-ins and all predecessor's pub-outs.
+  // Then insert a dummy move for each register in the block's pub-ins but not in this intersection.
+  const PublicPhysRegs &OurPubRegs = PTA.getIn(&MBB);
+  PublicPhysRegs TheirPubRegs = OurPubRegs;
+  for (MachineBasicBlock *PredMBB : MBB.predecessors())
+    TheirPubRegs.intersect(PTA.getOut(PredMBB));
+  SmallVector<MCPhysReg> NewPubRegsRaw;
+  for (MCPhysReg OurPubReg : OurPubRegs)
+    if (!TheirPubRegs.isPublic(OurPubReg))
+      NewPubRegsRaw.push_back(OurPubReg);
+
+  // Get cover for newly public registers.
+  SmallVector<MCPhysReg> NewPubRegs;
+  getRegisterCover(NewPubRegsRaw, NewPubRegs, TRI);
+
+  // Now, insert dummy moves.
+  const auto MBBI = MBB.begin();
+  for (MCPhysReg Reg : NewPubRegs)
+    TII->copyPhysReg(MBB, MBBI, DebugLoc(), Reg, Reg, /*KillSrc*/true);
+
+  // Mark newly inserted instructions public.
+  for (auto MBBI2 = MBB.begin(); MBBI2 != MBBI; ++MBBI2)
+    setInstrPublic(*MBBI2);
+
+  return !NewPubRegs.empty();
 }
 
 INITIALIZE_PASS_BEGIN(X86LLSCT, PASS_KEY "-pass",
