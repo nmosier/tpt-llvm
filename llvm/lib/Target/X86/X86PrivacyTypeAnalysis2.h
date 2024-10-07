@@ -153,6 +153,8 @@ protected:
 
   virtual StringRef getName() const = 0;
 
+  [[nodiscard]] bool setInstrPublic(MachineInstr &MI) const;
+
 private:
   void mergeIntoParent();
 

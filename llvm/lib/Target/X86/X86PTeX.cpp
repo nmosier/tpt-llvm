@@ -104,6 +104,7 @@ public:
 
 private:
   const bool Instrument;
+  const TargetRegisterInfo *TRI = nullptr;
   
   // TODO: Make another object that has MF and PrivTys as member.
   [[nodiscard]] bool instrumentPublicArguments(MachineFunction &MF, const X86::PrivacyTypeAnalysis &PTA);
@@ -121,7 +122,9 @@ private:
   MCPhysReg spillPrivateCSR(MCPhysReg SpillReg, MachineInstr &MI, auto GetSpillInfo);
 
   void validate(MachineFunction &MF, const X86::PrivacyTypeAnalysis &PTA);
-  void validateInstr(const MachineInstr &MF);
+  void validateInstr(const MachineInstr &MI);
+  void validateOperand(const MachineOperand &MO);
+  void validateBlock(MachineBasicBlock &MBB, const X86::PrivacyTypeAnalysis &PTA);
 };
 
 }
@@ -130,15 +133,19 @@ char X86LLSCT::ID = 0;
 
 bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
   LLVM_DEBUG(dbgs() << "===== " << getPassName() << " on " << MF.getName() << " =====\n");
-    
+
   if (!X86::EnablePTeX())
     return false;
+
+  TRI = MF.getSubtarget().getRegisterInfo();
 
   if (MF.getRegInfo().isSSA()) {
     assert(!Instrument && "Cannot instrument SSA machine IR!");
     annotateVirtualPointers(MF);
     return false;
   }
+
+  const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
 
   // Run physreg privacy analysis.
   X86::PrivacyTypeAnalysis PTA(MF);
@@ -154,7 +161,7 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
     return false;
   
   MF.verify();
-  
+
   if (X86::DumpPTeX(MF)) {
     errs() << "===== X86PTeX BEFORE: " << MF.getName() << " =====\n";
     MF.print(errs());
@@ -1023,39 +1030,37 @@ void X86LLSCT::validate(MachineFunction &MF, const X86::PrivacyTypeAnalysis &PTA
     }
 #endif
 
+    validateBlock(MBB, PTA);
+    
     for (const MachineInstr &MI : MBB)
       validateInstr(MI);
   }
 }
 
-void X86LLSCT::validateInstr(const MachineInstr &MI) {
-  const TargetRegisterInfo *TRI = MI.getParent()->getParent()->getSubtarget().getRegisterInfo();
+void X86LLSCT::validateBlock(MachineBasicBlock &MBB, const X86::PrivacyTypeAnalysis &PTA) {
+  const PublicPhysRegs &PubRegs = PTA.getIn(&MBB);
 
-  // Validate always-public operands.
+#if 0
+  // Quick check that any public uses at the front of the MBB are marked public in PTA.
+  if (!MBB.empty())
+    for (const MachineOperand &MO : MBB.front().operands())
+      if (MO.isReg() && MO.isUse() && MO.isPublic())
+        assert(PubRegs.isPublic(MO.getReg()) &&
+               "Public use of first instruction in block is not marked pub-in in block!");
+#endif
+}
+
+void X86LLSCT::validateInstr(const MachineInstr &MI) {
+  // Validate operands.
   for (const MachineOperand &MO : MI.operands())
-    if (MO.isReg() && X86::regAlwaysPublic(MO.getReg(), *TRI))
-      assert(MO.isPublic() && "Operand with always-public register was not marked public!");
-  
-  // Validate LEAs.
-  switch (MI.getOpcode()) {
-  case X86::LEA64r:
-  case X86::LEA32r:
-  case X86::LEA64_32r:
-  case X86::LEA16r:
-    {
-      const bool DefPublic = llvm::any_of(MI.operands(), [] (const MachineOperand &MO) -> bool {
-        return MO.isReg() && MO.isDef() && !MO.isImplicit() && MO.isPublic();
-      });
-      if (!DefPublic) {
-        const bool UsePrivate = llvm::any_of(MI.operands(), [] (const MachineOperand &MO) -> bool {
-          return MO.isReg() && MO.isUse() && !MO.isImplicit() && !MO.isPublic();
-        });
-        assert(UsePrivate && "Found a no private uses for a private LEA!");
-      }
-    }
-    break;
-  default: break;
-  }
+    validateOperand(MO);
+}
+
+void X86LLSCT::validateOperand(const MachineOperand &MO) {
+  assert(!(MO.isReg() && MO.isUndef() && MO.isPublic()) && "Found an undef+public operand!");
+
+  if (MO.isReg() && X86::regAlwaysPublic(MO.getReg(), *TRI))
+    assert(MO.isPublic() && "Operand with always-public register was not marked public!");
 }
 
 bool X86LLSCT::declassifyBlockEntries(MachineBasicBlock &MBB, const X86::PrivacyTypeAnalysis &PTA) {

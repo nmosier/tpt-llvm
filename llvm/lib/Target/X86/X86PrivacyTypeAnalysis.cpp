@@ -46,7 +46,7 @@ static llvm::cl::opt<bool> DumpIncrementalOpt {
 };
 
 static llvm::cl::opt<std::string> DumpFilter {
-  PASS_KEY "-dump-filter",
+  "x86-ptex-dump-filter",
   cl::desc("Only dump given functions, as comma-separated list"),
   cl::init(""),
   cl::Hidden,

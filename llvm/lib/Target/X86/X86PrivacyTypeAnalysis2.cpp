@@ -79,7 +79,22 @@ bool setInstrPublic(MachineInstr &MI) {
     }
   }
 
+  if (Changed)
+    LLVM_DEBUG(dbgs() << "set instr public: " << MI);
+
   return Changed;
+}
+
+namespace X86 {
+
+template <class Base>
+bool DirectionalPrivacyTypeAnalysis<Base>::setInstrPublic(MachineInstr &MI) const {
+  const bool Changed = llvm::setInstrPublic(MI);
+  if (Changed)
+    LLVM_DEBUG(dbgs() << getName() << " set instr public: " << MI);
+  return Changed;
+}
+
 }
 
 [[nodiscard]] static bool syncOperands(PublicPhysRegs &PubRegs, MachineInstr &MI, auto Pred) {
@@ -616,7 +631,7 @@ bool DirectionalPrivacyTypeAnalysis<Base>::run() {
     ++IterCount;
   } while (IterChanged);
 
-  LLVM_DEBUG(dbgs() << "iterations: " << IterCount << "\n");
+  LLVM_DEBUG(dbgs() << getName() << " iterations: " << IterCount << "\n");
 
   // Copy newly pub-in/pub-out regs to the parent's pub-ins/pub-outs.
   mergeIntoParent();

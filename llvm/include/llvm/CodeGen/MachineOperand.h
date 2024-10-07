@@ -533,6 +533,7 @@ public:
     assert(!(Val && isPublic()) && "Can't mark public operand undef");
 #else
 # warning "FIXME"
+    setIsPublic(false);
 #endif
     IsUndef = Val;
   }
