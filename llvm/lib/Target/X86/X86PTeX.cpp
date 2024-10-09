@@ -213,7 +213,7 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
 
   if (X86::DumpPTeX(MF)) {
     errs() << "===== X86PTeX AFTER: " << MF.getName() << " =====\n";
-    PTA.dump();
+    PTA.print(errs());
     errs() << "============================================\n";
   }
 
@@ -615,7 +615,6 @@ bool X86LLSCT::eliminatePrivateCSRs(MachineFunction &MF, const X86::PrivacyTypeA
         // If we inserted instructions, then we stutter.
         if (LocalChange) {
           MBBI = PreMBBI ? std::next(*PreMBBI) : MBB.begin();
-          MBBI->dump();
           continue;
         }
       }
