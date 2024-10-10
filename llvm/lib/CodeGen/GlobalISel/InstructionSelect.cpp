@@ -112,7 +112,7 @@ bool InstructionSelect::runOnMachineFunction(MachineFunction &MF) {
   // FIXME: There are many other MF/MFI fields we need to initialize.
 
   MachineRegisterInfo &MRI = MF.getRegInfo();
-#ifndef NDEBUG
+
   // Check that our input is fully legal: we require the function to have the
   // Legalized property, so it should be.
   // FIXME: This should be in the MachineVerifier, as the RegBankSelected
@@ -126,7 +126,7 @@ bool InstructionSelect::runOnMachineFunction(MachineFunction &MF) {
   // FIXME: We could introduce new blocks and will need to fix the outer loop.
   // Until then, keep track of the number of blocks to assert that we don't.
   const size_t NumBlocks = MF.size();
-#endif
+
   // Keep track of selected blocks, so we can delete unreachable ones later.
   DenseSet<MachineBasicBlock *> SelectedBlocks;
 
@@ -246,7 +246,6 @@ bool InstructionSelect::runOnMachineFunction(MachineFunction &MF) {
     }
   }
 
-#ifndef NDEBUG
   const TargetRegisterInfo &TRI = *MF.getSubtarget().getRegisterInfo();
   // Now that selection is complete, there are no more generic vregs.  Verify
   // that the size of the now-constrained vreg is unchanged and that it has a
@@ -290,7 +289,7 @@ bool InstructionSelect::runOnMachineFunction(MachineFunction &MF) {
     reportGISelFailure(MF, TPC, MORE, R);
     return false;
   }
-#endif
+
   // Determine if there are any calls in this machine function. Ported from
   // SelectionDAG.
   MachineFrameInfo &MFI = MF.getFrameInfo();

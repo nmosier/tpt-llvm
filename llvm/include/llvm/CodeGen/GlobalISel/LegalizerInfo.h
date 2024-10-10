@@ -1294,11 +1294,9 @@ private:
   LegacyLegalizerInfo LegacyInfo;
 };
 
-#ifndef NDEBUG
 /// Checks that MIR is fully legal, returns an illegal instruction if it's not,
 /// nullptr otherwise
 const MachineInstr *machineFunctionIsIllegal(const MachineFunction &MF);
-#endif
 
 } // end namespace llvm.
 

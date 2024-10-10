@@ -415,7 +415,6 @@ void LegalizerInfo::verify(const MCInstrInfo &MII) const {
 #endif
 }
 
-#ifndef NDEBUG
 // FIXME: This should be in the MachineVerifier, but it can't use the
 // LegalizerInfo as it's currently in the separate GlobalISel library.
 // Note that RegBankSelected property already checked in the verifier
@@ -432,4 +431,3 @@ const MachineInstr *llvm::machineFunctionIsIllegal(const MachineFunction &MF) {
   }
   return nullptr;
 }
-#endif

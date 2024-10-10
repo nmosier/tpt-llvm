@@ -617,7 +617,8 @@ static bool isLibCallInTailPosition(MachineInstr &MI,
     if (Ret->getNumImplicitOperands() != 1)
       return false;
 
-    if (PReg != Ret->getOperand(0).getReg())
+    // PTEX-BUGFIX: On x86, RETs may have explicit operands.
+    if (PReg != Ret->getOperand(Ret->getNumOperands() - 1).getReg())
       return false;
 
     // Skip over the COPY that we just validated.
