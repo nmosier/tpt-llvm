@@ -57,7 +57,7 @@ cl::opt<bool> PrefixProtectedStores {
 static cl::opt<bool> EliminatePrivateCSRs {
   PASS_KEY "-csrs",
   cl::desc("[PTeX] Eliminate private CSRs"),
-  cl::init(false),
+  cl::init(true),
   cl::Hidden,
 };
 
@@ -358,7 +358,7 @@ void X86LLSCT::computePrivateCSRsToSpill(const MachineInstr &MI, const PublicPhy
 
   const MachineFunction &MF = *MI.getParent()->getParent();
   const MachineFrameInfo &MFI = MF.getFrameInfo();
-  const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+  const auto *TRI = MF.getSubtarget<X86Subtarget>().getRegisterInfo();
 
   // Private registers that require spilling are those that meet the following criteria:
   //   - They are not pristine (see MachineFrameInfo::getPristineRegs()).
@@ -373,8 +373,19 @@ void X86LLSCT::computePrivateCSRsToSpill(const MachineInstr &MI, const PublicPhy
       PrivateCSRs.insert(CSR);
   // At this point, criterion 3 is met.
   // Now, remove public CSRs.
-  for (MCPhysReg PubReg : PubRegs)
-    PrivateCSRs.erase(PubReg);
+  for (MCPhysReg PubReg : PubRegs) 
+    if (auto FullPubReg = getX86SubSuperRegisterOrZero(PubReg, 64))
+      for (MCPhysReg SubPubReg : TRI->subregs_inclusive(FullPubReg))
+        PrivateCSRs.erase(SubPubReg);
+  // Remove the frame pointer.
+  if (const Register Reg = TRI->getFrameRegister(MF))
+    for (MCPhysReg SubReg : TRI->subregs_inclusive(Reg))
+      PrivateCSRs.erase(SubReg);
+  // Remove the base pointer.
+  if (TRI->hasBasePointer(MF))
+    for (MCPhysReg SubReg : TRI->subregs_inclusive(TRI->getBaseRegister()))
+      PrivateCSRs.erase(SubReg);
+  
   // Now, criterion 2 and 3 are met.
   // Finally, remove pristine registers.
 #if 0
@@ -382,7 +393,7 @@ void X86LLSCT::computePrivateCSRsToSpill(const MachineInstr &MI, const PublicPhy
   for (MCPhysReg PristineReg = 0; PristineReg < PristineRegs.size(); ++PristineReg)
     if (PristineRegs[PristineReg])
       PrivateCSRs.erase(PristineReg);
-#else
+#elif 0
   // TODO: Communicate this in argument.
   LivePhysRegs LPR(*TRI);
   LPR.addLiveInsNoPristines(*MI.getParent());
@@ -403,6 +414,9 @@ void X86LLSCT::computePrivateCSRsToSpill(const MachineInstr &MI, const PublicPhy
 
   // Finally, compute the maximal cover.
   getRegisterCover(PrivateCSRs, ToSpill, TRI);
+
+  // If we have any weird upper-half registers in there, just throw them out.
+  
 
 #if 0
   // But agh, we might have some funky non-standard registers in there now, like
@@ -439,11 +453,23 @@ MCPhysReg X86LLSCT::spillPrivateCSR(MCPhysReg SpillReg, MachineInstr &MI, auto G
   PrivateSpillInfo &PSI = *GetSpillInfo(&MI, SpillReg);
   const int FrameIndex = PSI.getOrAllocateSpillSlot(SpillReg, MF);
 
+  // Is this register live before the call?
+  bool CSRLive = false;
+  {
+    LivePhysRegs LPR(*TRI);
+    LPR.addLiveIns(MBB);
+    for (auto MBBI = MBB.begin(); MBBI != MI.getIterator(); ++MBBI) {
+      SmallVector<std::pair<MCPhysReg, const MachineOperand *>> Clobbers;
+      LPR.stepForward(*MBBI, Clobbers);
+    }
+    CSRLive = !LPR.available(MF.getRegInfo(), SpillReg);
+  }
+
   // Store to spill slot before call.
   // TODO: Should also check if it's live, once we start spilling dead registers.
   // TODO: Actually, once we check if it's live, then we don't need to check ...
   // TODO: Actually, isn't this impossible? We should only have public CSRs on return.
-  if (!MI.isReturn()) {
+  if (!MI.isReturn() && CSRLive) {
     // Insert store instruction.
     TII->storeRegToStackSlot(MBB, PreMBBI, SpillReg, /*isKill*/true, FrameIndex, RegClass, TRI, X86::NoRegister);
   }
@@ -474,7 +500,8 @@ MCPhysReg X86LLSCT::spillPrivateCSR(MCPhysReg SpillReg, MachineInstr &MI, auto G
       MO.setIsPublic();
 
   // Load from spill slot after call.
-  if (!MI.isReturn()) {
+  // TODO: Shouldn't MI.isReturn() be impossible?
+  if (!MI.isReturn() && CSRLive) {
     // Insert load instruction.
     TII->loadRegFromStackSlot(MBB, PostMBBI, SpillReg, FrameIndex, RegClass, TRI, X86::NoRegister);
   }
@@ -587,17 +614,6 @@ bool X86LLSCT::eliminatePrivateCSRs(MachineFunction &MF, const X86::PrivacyTypeA
     return &CallPrivateSpillInfo[MI];
   };
 
-  // BUG: We're not updating PubRegs properly.
-  for (MachineBasicBlock &MBB : MF) {
-    PublicPhysRegs PubRegs = PTA.getIn(&MBB);
-    for (MachineInstr &MI : MBB) {
-      if (MI.isCall())
-        Changed |= eliminatePrivateCSRsForCall(MI, PubRegs, GetSpillInfo);
-      PubRegs.stepForward(MI);
-    }
-  }
-
-  // Idea: stutter.
   bool IterChanged;
   for (MachineBasicBlock &MBB : MF) {
     PublicPhysRegs PubRegs = PTA.getIn(&MBB);
@@ -623,15 +639,18 @@ bool X86LLSCT::eliminatePrivateCSRs(MachineFunction &MF, const X86::PrivacyTypeA
       PubRegs.stepForward(MI);
       ++MBBI;
     }
-
-#if 0
-    for (MachineInstr &MI : llvm::make_early_inc_range(MBB)) {
-      if (MI.isCall())
-        Changed |= eliminatePrivateCSRsForCall(MI, PubRegs, GetSpillInfo);
-      PubRegs.stepForward(MI);
-    }
-#endif
   }
+
+  // Restore at each landingpad.
+  for (const auto &[LPI, SpillInfo] : InvokePrivateSpillInfo) {
+    MachineBasicBlock &MBB = *LPI->LandingPadBlock;
+    auto MBBI = MBB.begin();
+    for (const auto &[Reg, FrameIndex] : SpillInfo) {
+      const auto *RegClass = TRI->getMinimalPhysRegClass(Reg);
+      TII->loadRegFromStackSlot(MBB, MBBI, Reg, FrameIndex, RegClass, TRI, X86::NoRegister);
+      Changed = true;
+    }
+  }  
   
   return Changed;
 
@@ -1082,6 +1101,19 @@ bool X86LLSCT::declassifyBlockEntries(MachineBasicBlock &MBB, const X86::Privacy
   // Get cover for newly public registers.
   SmallVector<MCPhysReg> NewPubRegs;
   getRegisterCover(NewPubRegsRaw, NewPubRegs, TRI);
+
+  // Erase those that aren't live.
+  {
+    LivePhysRegs LPR(*TRI);
+    LPR.addLiveIns(MBB);
+    for (auto it = NewPubRegs.begin(); it != NewPubRegs.end(); ) {
+      if (LPR.contains(*it)) {
+        ++it;
+      } else {
+        it = NewPubRegs.erase(it);
+      }
+    }
+  }
 
   // Now, insert dummy moves.
   const auto MBBI = MBB.begin();

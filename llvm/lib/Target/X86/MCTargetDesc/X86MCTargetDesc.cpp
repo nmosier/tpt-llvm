@@ -879,37 +879,37 @@ MCRegister llvm::getX86SubSuperRegisterOrZero(MCRegister Reg, unsigned Size,
   case 64:
     switch (Reg.id()) {
     default: return 0;
-    case X86::AH: case X86::AL: case X86::AX: case X86::EAX: case X86::RAX:
+    case X86::AH: case X86::AL: case X86::AX: case X86::EAX: case X86::RAX: case X86::HAX:
       return X86::RAX;
-    case X86::DH: case X86::DL: case X86::DX: case X86::EDX: case X86::RDX:
+    case X86::DH: case X86::DL: case X86::DX: case X86::EDX: case X86::RDX: case X86::HDX:
       return X86::RDX;
-    case X86::CH: case X86::CL: case X86::CX: case X86::ECX: case X86::RCX:
+    case X86::CH: case X86::CL: case X86::CX: case X86::ECX: case X86::RCX: case X86::HCX:
       return X86::RCX;
     case X86::BH: case X86::BL: case X86::BX: case X86::EBX: case X86::RBX: case X86::HBX:
       return X86::RBX;
-    case X86::SIH: case X86::SIL: case X86::SI: case X86::ESI: case X86::RSI:
+    case X86::SIH: case X86::SIL: case X86::SI: case X86::ESI: case X86::RSI: case X86::HSI:
       return X86::RSI;
-    case X86::DIH: case X86::DIL: case X86::DI: case X86::EDI: case X86::RDI:
+    case X86::DIH: case X86::DIL: case X86::DI: case X86::EDI: case X86::RDI: case X86::HDI:
       return X86::RDI;
     case X86::BPH: case X86::HBP: case X86::BPL: case X86::BP: case X86::EBP: case X86::RBP:
       return X86::RBP;
-    case X86::SPH: case X86::SPL: case X86::SP: case X86::ESP: case X86::RSP:
+    case X86::SPH: case X86::SPL: case X86::SP: case X86::ESP: case X86::RSP: case X86::HSP:
       return X86::RSP;
-    case X86::R8B: case X86::R8W: case X86::R8D: case X86::R8:
+    case X86::R8B: case X86::R8W: case X86::R8D: case X86::R8: case X86::R8WH:
       return X86::R8;
-    case X86::R9B: case X86::R9W: case X86::R9D: case X86::R9:
+    case X86::R9B: case X86::R9W: case X86::R9D: case X86::R9: case X86::R9WH:
       return X86::R9;
-    case X86::R10B: case X86::R10W: case X86::R10D: case X86::R10:
+    case X86::R10B: case X86::R10W: case X86::R10D: case X86::R10: case X86::R10WH:
       return X86::R10;
-    case X86::R11B: case X86::R11W: case X86::R11D: case X86::R11:
+    case X86::R11B: case X86::R11W: case X86::R11D: case X86::R11: case X86::R11WH:
       return X86::R11;
-    case X86::R12B: case X86::R12W: case X86::R12D: case X86::R12: case X86::R12BH:
+    case X86::R12B: case X86::R12W: case X86::R12D: case X86::R12: case X86::R12BH: case X86::R12WH:
       return X86::R12;
-    case X86::R13B: case X86::R13W: case X86::R13D: case X86::R13: case X86::R13BH:
+    case X86::R13B: case X86::R13W: case X86::R13D: case X86::R13: case X86::R13BH: case X86::R13WH:
       return X86::R13;
-    case X86::R14B: case X86::R14W: case X86::R14D: case X86::R14: case X86::R14BH:
+    case X86::R14B: case X86::R14W: case X86::R14D: case X86::R14: case X86::R14BH: case X86::R14WH:
       return X86::R14;
-    case X86::R15B: case X86::R15W: case X86::R15D: case X86::R15: case X86::R15BH:
+    case X86::R15B: case X86::R15W: case X86::R15D: case X86::R15: case X86::R15BH: case X86::R15WH:
       return X86::R15;
     }
   }

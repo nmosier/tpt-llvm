@@ -419,6 +419,12 @@ void PrivacyTypeAnalysis::init() {
     In[&MBB].init(TRI);
     Out[&MBB].init(TRI);
   }
+
+  // Init entry blocks pub-ins to include all callee-saved registers.
+  const MCPhysReg *CSRs = TRI->getCalleeSavedRegs(&MF);
+  assert(*CSRs);
+  for (const MCPhysReg *CSRIt = CSRs; *CSRIt; ++CSRIt)
+    In[&MF.front()].addReg(*CSRIt);
 }
 
 bool PrivacyTypeAnalysis::forward() {
@@ -468,6 +474,12 @@ void ForwardPrivacyTypeAnalysis::init() {
     // TODO: Need to change this.
     In[&MBB].addLiveIns(MBB);
     Out[&MBB].addLiveOuts(MBB);
+
+    // Also add all the callee-saved registers.
+    for (const MCPhysReg *CSR = TRI->getCalleeSavedRegs(&MF); *CSR; ++CSR) {
+      In[&MBB].addReg(*CSR);
+      Out[&MBB].addReg(*CSR);
+    }
 
     // Conservatively initialize the pub-ins of entry blocks to the parent analysis' pub-ins. We conservatively consider entry
     // blocks to be anything without a predecessor.
@@ -539,6 +551,12 @@ void BackwardPrivacyTypeAnalysis::init() {
     // of all other blocks.
     In[&MBB].addLiveIns(MBB);
     Out[&MBB].addLiveOuts(MBB);
+
+    // Also add all the callee-saved registers.
+    for (const MCPhysReg *CSR = TRI->getCalleeSavedRegs(&MF); *CSR; ++CSR) {
+      In[&MBB].addReg(*CSR);
+      Out[&MBB].addReg(*CSR);
+    }    
 
     // Conservatively initialize the pub-outs of exit blocks to the parent analysis' pub-outs.
     // We consider anything without a successor to be an exit block.
