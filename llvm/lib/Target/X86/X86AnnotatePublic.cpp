@@ -10,19 +10,29 @@
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "X86PrivacyTypeAnalysis.h"
 #include "llvm/CodeGen/RDFGraph.h"
+#include "X86BoundToLeakAnalysis.h"
 
-#define PASS_KEY "x86-annotate-pointers"
+#define PASS_KEY "x86-annotate-public"
 #define DEBUG_TYPE PASS_KEY
 
 using namespace llvm;
 
 namespace {
 
-cl::opt<bool> EnableAnnotatePointers {
+enum Mode {
+  AnnotateNone,
+  AnnotatePointers,
+  AnnotateBoundToLeak,
+};
+
+cl::opt<Mode> EnableAnnotations {
   PASS_KEY,
-  cl::desc("Enable pointer annotation for stats gathering"),
-  cl::init(false),
-  cl::Hidden,
+  cl::desc("Enable public data annotation for stats gathering"),
+  cl::init(AnnotateNone),
+  cl::values(
+      clEnumValN(AnnotateNone, "none", "Don't annotate any public data"),
+      clEnumValN(AnnotatePointers, "pointers", "Annotate pointers"),
+      clEnumValN(AnnotateBoundToLeak, "bound-to-leak", "Annotate bound-to-leak data")),
 };
 
 cl::opt<bool> AnnotateAllPointers {
@@ -53,7 +63,10 @@ public:
     MachineFunctionPass::getAnalysisUsage(AU);
   }
 
-  std::unordered_set<MachineInstr *> detectPointerLoads(MachineFunction &MF);
+private:
+  using InstrSet = std::unordered_set<MachineInstr *>;
+  void detectPointerLoads(MachineFunction &MF, InstrSet &AnnotateInstrs);
+  void detectBoundToLeakInstrs(MachineFunction &MF, InstrSet &AnnotateInstrs);
 };
 
 }
@@ -61,30 +74,38 @@ public:
 char X86AnnotatePointers::ID = 0;
 
 bool X86AnnotatePointers::runOnMachineFunction(MachineFunction &MF) {
-  if (!EnableAnnotatePointers)
+  if (EnableAnnotations == AnnotateNone)
     return false;
 
   bool Changed = false;
+  std::unordered_set<MachineInstr *> AnnotateInstrs;
 
-  bool Dump = false;
+  switch (EnableAnnotations) {
+  case AnnotatePointers:
+    detectPointerLoads(MF, AnnotateInstrs);
+    break;
 
-  const std::unordered_set<MachineInstr *> PointerLoads = detectPointerLoads(MF);
-
-  for (MachineInstr *PointerLoad : PointerLoads) {
-    PointerLoad->setFlag(MachineInstr::AnnotatePointerLoad);
-    if (Dump)
-      errs() << "pointer load: " << *PointerLoad;
+  case AnnotateBoundToLeak:
+    detectBoundToLeakInstrs(MF, AnnotateInstrs);
+    break;
+    
+  default:
+    llvm_unreachable("unreachable!");
   }
 
-  Changed |= !PointerLoads.empty();
+  for (MachineInstr *MI : AnnotateInstrs) {
+    MI->setFlag(MachineInstr::AnnotatePointerLoad); // FIXME: Rename.
+    LLVM_DEBUG(dbgs() << "annotating " << *MI);
+  }
+
+  Changed |= !AnnotateInstrs.empty();
 
   return Changed;
 }
 
-std::unordered_set<MachineInstr *> X86AnnotatePointers::detectPointerLoads(MachineFunction &MF) {
+void X86AnnotatePointers::detectPointerLoads(MachineFunction &MF, InstrSet &PointerLoads) {
   const auto &TRI = *MF.getSubtarget().getRegisterInfo();
 
-  std::unordered_set<MachineInstr *> PointerLoads;
   std::unordered_map<MachineBasicBlock *, LivePhysRegs> Map;
 
   for (MachineBasicBlock &MBB : MF) {
@@ -153,12 +174,26 @@ std::unordered_set<MachineInstr *> X86AnnotatePointers::detectPointerLoads(Machi
       Changed |= (OldSize != NewSize);
     }
   } while (Changed);
-
-  return PointerLoads;
 }
 
-INITIALIZE_PASS_BEGIN(X86AnnotatePointers, PASS_KEY "-pass", "X86 Annotate Pointers pass", false, false)
-INITIALIZE_PASS_END(X86AnnotatePointers, PASS_KEY "-pass", "X86 Annotate Pointers pass", false, false)
+void X86AnnotatePointers::detectBoundToLeakInstrs(MachineFunction &MF, InstrSet &AnnotateInstrs) {
+  X86::BoundToLeakAnalysis BTLA(MF);
+  BTLA.run();
+
+  // Copy instructions that were marked public to now be annotated.
+  for (MachineBasicBlock &MBB : MF) {
+    for (MachineInstr &MI : MBB) {
+      if (llvm::any_of(MI.operands(), [] (const MachineOperand &MO) -> bool {
+        return MO.isReg() && MO.isDef() && !MO.isImplicit() && !MO.isUndef() && MO.isPublic();
+      })) {
+        AnnotateInstrs.insert(&MI);
+      }
+    }
+  }
+}
+
+INITIALIZE_PASS_BEGIN(X86AnnotatePointers, PASS_KEY "-pass", "X86 Annotate Public Data pass", false, false)
+INITIALIZE_PASS_END(X86AnnotatePointers, PASS_KEY "-pass", "X86 Annotate Public Data pass", false, false)
 
 FunctionPass *llvm::createX86AnnotatePointersPass() {
   return new X86AnnotatePointers();

@@ -1,0 +1,165 @@
+#include "X86BoundToLeakAnalysis.h"
+
+#include "X86PrivacyTypeAnalysis.h"
+
+namespace llvm::X86 {
+
+static void markOpPublic(MachineOperand &MO) {
+  if (MO.isReg() && !MO.isUndef())
+    MO.setIsPublic();
+}
+
+static void markAllOpsPublic(MachineInstr &MI) {
+  llvm::for_each(MI.operands(), markOpPublic);
+}
+
+void BoundToLeakAnalysis::init() {
+  for (MachineBasicBlock &MBB : MF) {
+    for (MachineInstr &MI : MBB) {
+      if (MI.isCall())
+        for (MachineOperand &MO : MI.operands())
+          if (MO.isReg() && MO.isUse() && !MO.isImplicit())
+            markOpPublic(MO);
+  
+      if (MI.isBranch())
+        for (MachineOperand &MO : MI.operands())
+          if (MO.isReg() && MO.isUse())
+            markOpPublic(MO);
+
+      const int MemIdx = X86::getMemRefBeginIdx(MI);
+      if (MI.mayLoadOrStore() && MemIdx >= 0) {
+        markOpPublic(MI.getOperand(MemIdx + X86::AddrBaseReg));
+        markOpPublic(MI.getOperand(MemIdx + X86::AddrIndexReg));
+      }
+    }
+  }
+
+  const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+
+  // Init pub-in and pub-out maps.
+  for (MachineBasicBlock &MBB : MF) {
+    In[&MBB].init(TRI);
+    Out[&MBB].init(TRI);
+    In[&MBB].addLiveIns(MBB);
+    Out[&MBB].addLiveOuts(MBB);
+
+    // Initialize exit blocks to have no public outs.
+    if (MBB.succ_empty())
+      Out[&MBB].clear();
+  }
+
+}
+
+bool BoundToLeakAnalysis::run() {
+  init();
+
+  bool OverallChanged = false;
+  bool Changed = false;
+  do {
+    Changed = backward();
+    OverallChanged |= Changed;
+  } while (Changed);
+
+  return OverallChanged;
+}
+
+bool BoundToLeakAnalysis::backward() {
+  bool Changed = false;
+  for (MachineBasicBlock& MBB : MF) {
+    Changed |= block(MBB);
+  }
+  return Changed;
+}
+
+bool BoundToLeakAnalysis::block(MachineBasicBlock &MBB) {
+  bool Changed = false;
+
+  // Meet block pub-out with successor block pub-ins.
+  for (MachineBasicBlock *SuccMBB : MBB.successors())
+    Changed |= Out[&MBB].intersect(In[SuccMBB]);
+
+  // Now, transfer across the block, *in reverse order*.
+  PublicPhysRegs PubRegs = Out[&MBB];
+  for (MachineInstr &MI : llvm::reverse(MBB))
+    Changed |= instruction(MI, PubRegs);
+
+  // Finally, update the pub-ins.
+  Changed |= In[&MBB].intersect(PubRegs);
+
+  return Changed;
+}
+
+[[nodiscard]] static bool syncOperands(PublicPhysRegs &PubRegs, MachineInstr &MI, auto Pred) {
+  // TODO: Experiment with also marking changed if we add a new register to PubRegs.
+  bool Changed = false;
+  for (MachineOperand &MO : MI.operands()) {
+    if (MO.isReg() && !MO.isUndef() && Pred(MO)) {
+      const bool PubMO = MO.isPublic();
+      const bool PubReg = PubRegs.isPublic(MO.getReg());
+      if (PubMO && !PubReg) {
+        PubRegs.addReg(MO.getReg());
+      } else if (!PubMO && PubReg) {
+        MO.setIsPublic();
+        Changed = true;
+      }
+    }
+  }
+  return Changed;
+}
+
+[[nodiscard]] static bool syncUses(PublicPhysRegs &PubRegs, MachineInstr &MI) {
+  return syncOperands(PubRegs, MI, std::mem_fn(&MachineOperand::isUse));
+}
+
+[[nodiscard]] static bool syncDefs(PublicPhysRegs &PubRegs, MachineInstr &MI) {
+  return syncOperands(PubRegs, MI, std::mem_fn(&MachineOperand::isDef));
+}
+
+static bool instrEligible(const MachineInstr &MI, const PublicPhysRegs &PubRegs) {
+  if (MI.isCall())
+    return false;
+
+  const unsigned NumOuts = llvm::count_if(MI.operands(), [] (const MachineOperand &MO) -> bool {
+    return MO.isReg() && MO.isUse() && !MO.isImplicit() && !MO.isUndef();
+  });
+  const unsigned NumIns = llvm::count_if(MI.operands(), [] (const MachineOperand &MO) -> bool {
+    return MO.isReg() && MO.isDef() && !MO.isImplicit() && !MO.isUndef();
+  });
+  const unsigned NumUnprotOuts = llvm::count_if(MI.operands(), [&PubRegs] (const MachineOperand &MO) -> bool {
+    return MO.isReg() && MO.isUse() && !MO.isImplicit() && !MO.isUndef() && PubRegs.isPublic(MO.getReg());
+  });
+  return NumOuts == 1 && NumUnprotOuts == 1 && NumIns == 1;
+}
+
+bool BoundToLeakAnalysis::instruction(MachineInstr &MI, PublicPhysRegs &PubRegs) {
+  bool Changed = false;
+  const TargetRegisterInfo *TRI = MI.getParent()->getParent()->getSubtarget().getRegisterInfo();
+
+  // Sync PubRegs -> MO defs.
+  Changed |= syncDefs(PubRegs, MI);
+
+  // Sync PubRegs -> MO uses.
+  Changed |= syncUses(PubRegs, MI);
+
+  // Here, we're only going to backprop for non-calls that have one explicit output
+  // and one explicit input.
+  if (!instrEligible(MI, PubRegs)) {
+    return Changed;
+  }
+
+  LLVM_DEBUG(dbgs() << "Marking instruction unprotected: " << MI);
+  Changed |= setInstrPublic(MI);
+
+  // Mark all inputs and outputs unprotected.
+  for (MachineOperand &MO : MI.operands()) {
+    if (MO.isReg() && !MO.isUndef()) {
+      Changed |= PubRegs.addReg(MO.getReg());
+      Changed |= !MO.isPublic();
+      MO.setIsPublic();
+    }
+  }
+
+  return Changed;
+}
+
+}
