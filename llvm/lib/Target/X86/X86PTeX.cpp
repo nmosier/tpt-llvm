@@ -19,7 +19,7 @@
 #include "llvm/IR/Value.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "X86PrivacyTypeAnalysis.h"
-#include "X86PrivacyTypeAnalysis2.h"
+#include "X86PTeXAnalysis.h"
 #include "X86LLSCTUtil.h"
 
 #define PTEX_DEBUG 1
@@ -90,10 +90,10 @@ static bool DumpPTeX(const MachineFunction &MF) {
 namespace {
 
 
-class X86LLSCT final : public MachineFunctionPass {
+class X86PTeX final : public MachineFunctionPass {
 public:
   static char ID;
-  X86LLSCT(bool Instrument) : MachineFunctionPass(ID), Instrument(Instrument) {}
+  X86PTeX(bool Instrument) : MachineFunctionPass(ID), Instrument(Instrument) {}
 
   void getAnalysisUsage(AnalysisUsage& AU) const override {
     AU.setPreservesCFG();
@@ -107,11 +107,11 @@ private:
   const TargetRegisterInfo *TRI = nullptr;
   
   // TODO: Make another object that has MF and PrivTys as member.
-  [[nodiscard]] bool instrumentPublicArguments(MachineFunction &MF, const X86::PrivacyTypeAnalysis &PTA);
+  [[nodiscard]] bool instrumentPublicArguments(MachineFunction &MF, const X86::PTeXAnalysis &PTA);
   [[nodiscard]] bool instrumentPublicCalleeReturnValues(MachineFunction &MF);
-  [[nodiscard]] bool eliminatePrivateCSRs(MachineFunction &MF, const X86::PrivacyTypeAnalysis &PTA);
+  [[nodiscard]] bool eliminatePrivateCSRs(MachineFunction &MF, const X86::PTeXAnalysis &PTA);
   [[nodiscard]] bool avoidPartialUpdatesOfPrivateEFLAGS(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys);
-  [[nodiscard]] bool declassifyBlockEntries(MachineBasicBlock &MBB, const X86::PrivacyTypeAnalysis &PTA);
+  [[nodiscard]] bool declassifyBlockEntries(MachineBasicBlock &MBB, const X86::PTeXAnalysis &PTA);
   std::optional<PrivacyType> computeInstrPrivacy(MachineInstr &MI, X86PrivacyTypeAnalysis &PrivTys);
   void annotateVirtualPointers(MachineFunction &MF);
 
@@ -121,17 +121,17 @@ private:
                                  SmallVectorImpl<MCPhysReg> &ToSpill);
   MCPhysReg spillPrivateCSR(MCPhysReg SpillReg, MachineInstr &MI, auto GetSpillInfo);
 
-  void validate(MachineFunction &MF, const X86::PrivacyTypeAnalysis &PTA);
+  void validate(MachineFunction &MF, const X86::PTeXAnalysis &PTA);
   void validateInstr(const MachineInstr &MI);
   void validateOperand(const MachineOperand &MO);
-  void validateBlock(MachineBasicBlock &MBB, const X86::PrivacyTypeAnalysis &PTA);
+  void validateBlock(MachineBasicBlock &MBB, const X86::PTeXAnalysis &PTA);
 };
 
 }
 
-char X86LLSCT::ID = 0;
+char X86PTeX::ID = 0;
 
-bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
+bool X86PTeX::runOnMachineFunction(MachineFunction& MF) {
   LLVM_DEBUG(dbgs() << "===== " << getPassName() << " on " << MF.getName() << " =====\n");
 
   if (!X86::EnablePTeX())
@@ -148,7 +148,7 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
   const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
 
   // Run physreg privacy analysis.
-  X86::PrivacyTypeAnalysis PTA(MF);
+  X86::PTeXAnalysis PTA(MF);
   PTA.run();
   if (X86::DumpPTeX(MF))
     PTA.print(errs());
@@ -186,30 +186,8 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
     assert(!EC);
     MF.print(os);
   }  
-
-#if 0
-  if (Instrument) {
-
-    // TODO: Remove debugging envvar guards.
-
-    // Step 2: Insert publicly-typed register copies for all publicly-typed, live-in, non-callee-saved registers.
-    if (!skip("PUBARGS"))
-      Changed |= instrumentPublicArguments(MF, PrivacyTypes);
-
-    // Step 3: Insert publicly-typed register copies for all publicly-typed callee return values.
-    if (!skip("PUBRETS"))
-      Changed |= instrumentPublicCalleeReturnValues(MF, PrivacyTypes);
-
-    // Step 4: Eliminate all privately-typed callee-saved registers.
-    if (!skip("CSRS"))
-      Changed |= eliminatePrivateCalleeSavedRegisters(MF, PrivacyTypes);
-
-    // Step 5: Heuristically avoid partial updates of privately-typed EFLAGS.
-    Changed |= avoidPartialUpdatesOfPrivateEFLAGS(MF, PrivacyTypes);
-  }
   
   // TODO: Verify some properties, like that there are no privately-typed callee-saved registers.
-#endif
 
   if (X86::DumpPTeX(MF)) {
     errs() << "===== X86PTeX AFTER: " << MF.getName() << " =====\n";
@@ -222,17 +200,7 @@ bool X86LLSCT::runOnMachineFunction(MachineFunction& MF) {
   return Changed;
 }
 
-#if 0
-static bool unfoldLoads(MachineFunction &MF) {
-  for (MachineBasicBlock &MBB : MF) {
-    for (MachineInstr &MI : MBB) {
-      
-    }
-  }
-}
-#endif
-
-bool X86LLSCT::instrumentPublicArguments(MachineFunction &MF, const X86::PrivacyTypeAnalysis &PTA) {
+bool X86PTeX::instrumentPublicArguments(MachineFunction &MF, const X86::PTeXAnalysis &PTA) {
   const TargetInstrInfo *TII = MF.getSubtarget().getInstrInfo();
   const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
   const MachineRegisterInfo &MRI = MF.getRegInfo();
@@ -273,7 +241,7 @@ bool X86LLSCT::instrumentPublicArguments(MachineFunction &MF, const X86::Privacy
   return MBB.begin() != MBBI;
 }
 
-bool X86LLSCT::instrumentPublicCalleeReturnValues(MachineFunction &MF) {
+bool X86PTeX::instrumentPublicCalleeReturnValues(MachineFunction &MF) {
   bool Changed = false;
   const TargetInstrInfo *TII = MF.getSubtarget().getInstrInfo();
   const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
@@ -352,7 +320,7 @@ int PrivateSpillInfo::getOrAllocateSpillSlot(Register Reg, MachineFunction &MF) 
   return FrameIndex;
 }
 
-void X86LLSCT::computePrivateCSRsToSpill(const MachineInstr &MI, const PublicPhysRegs &PubRegs,
+void X86PTeX::computePrivateCSRsToSpill(const MachineInstr &MI, const PublicPhysRegs &PubRegs,
                                          SmallVectorImpl<MCPhysReg> &ToSpill) {
   assert(MI.isCall());  
 
@@ -438,7 +406,7 @@ void X86LLSCT::computePrivateCSRsToSpill(const MachineInstr &MI, const PublicPhy
 }
 
 // TODO: Change GetSpillInfo to std::function, at least.
-MCPhysReg X86LLSCT::spillPrivateCSR(MCPhysReg SpillReg, MachineInstr &MI, auto GetSpillInfo) {
+MCPhysReg X86PTeX::spillPrivateCSR(MCPhysReg SpillReg, MachineInstr &MI, auto GetSpillInfo) {
   const auto PreMBBI = MI.getIterator();
   const auto PostMBBI = std::next(PreMBBI);
   MachineBasicBlock &MBB = *MI.getParent();
@@ -509,7 +477,7 @@ MCPhysReg X86LLSCT::spillPrivateCSR(MCPhysReg SpillReg, MachineInstr &MI, auto G
   return getX86SubSuperRegister(SpillReg, 64);
 }
 
-bool X86LLSCT::eliminatePrivateCSRsForCall(MachineInstr &MI, PublicPhysRegs &PubRegs, auto GetSpillInfo) {
+bool X86PTeX::eliminatePrivateCSRsForCall(MachineInstr &MI, PublicPhysRegs &PubRegs, auto GetSpillInfo) {
   assert(MI.isCall());
 
   // Collect registers to spill.
@@ -532,7 +500,7 @@ bool X86LLSCT::eliminatePrivateCSRsForCall(MachineInstr &MI, PublicPhysRegs &Pub
   return !ToSpill.empty();
 }
 
-bool X86LLSCT::eliminatePrivateCSRs(MachineFunction &MF, const X86::PrivacyTypeAnalysis &PTA) {
+bool X86PTeX::eliminatePrivateCSRs(MachineFunction &MF, const X86::PTeXAnalysis &PTA) {
   bool Changed = false;
   const auto *TII = MF.getSubtarget().getInstrInfo();
   const auto *TRI = MF.getSubtarget().getRegisterInfo();
@@ -811,7 +779,7 @@ bool X86LLSCT::eliminatePrivateCSRs(MachineFunction &MF, const X86::PrivacyTypeA
 #endif
 }
 
-bool X86LLSCT::avoidPartialUpdatesOfPrivateEFLAGS(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys) {
+bool X86PTeX::avoidPartialUpdatesOfPrivateEFLAGS(MachineFunction &MF, X86PrivacyTypeAnalysis &PrivTys) {
   bool Changed = false;
 
   const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
@@ -918,7 +886,7 @@ void X86::setInstrPrivacy(MachineInstr &MI, PrivacyType PrivTy) {
   }
 }
 
-std::optional<PrivacyType> X86LLSCT::computeInstrPrivacy(MachineInstr &MI, X86PrivacyTypeAnalysis &PrivTys) {
+std::optional<PrivacyType> X86PTeX::computeInstrPrivacy(MachineInstr &MI, X86PrivacyTypeAnalysis &PrivTys) {
   // Calls never get privacy prefixes.
   if (MI.isCall())
     return std::nullopt;
@@ -993,7 +961,7 @@ static void annotateVirtualPointersInstr(MachineInstr &MI, const MachineRegister
   LLVM_DEBUG(dbgs() << "PTeX.LLT: marking instruction public: " << MI);
 }
 
-void X86LLSCT::annotateVirtualPointers(MachineFunction &MF) {
+void X86PTeX::annotateVirtualPointers(MachineFunction &MF) {
   const MachineRegisterInfo &MRI = MF.getRegInfo();
   for (MachineBasicBlock &MBB : MF)
     for (MachineInstr &MI : MBB)
@@ -1001,7 +969,7 @@ void X86LLSCT::annotateVirtualPointers(MachineFunction &MF) {
   MF.getRegInfo().clearVirtRegTypes();
 }
 
-void X86LLSCT::validate(MachineFunction &MF, const X86::PrivacyTypeAnalysis &PTA) {
+void X86PTeX::validate(MachineFunction &MF, const X86::PTeXAnalysis &PTA) {
   const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
   
   // If an explicit output is public, then all implicit outputs should be public.
@@ -1055,7 +1023,7 @@ void X86LLSCT::validate(MachineFunction &MF, const X86::PrivacyTypeAnalysis &PTA
   }
 }
 
-void X86LLSCT::validateBlock(MachineBasicBlock &MBB, const X86::PrivacyTypeAnalysis &PTA) {
+void X86PTeX::validateBlock(MachineBasicBlock &MBB, const X86::PTeXAnalysis &PTA) {
   const PublicPhysRegs &PubRegs = PTA.getIn(&MBB);
 
 #if 0
@@ -1068,20 +1036,20 @@ void X86LLSCT::validateBlock(MachineBasicBlock &MBB, const X86::PrivacyTypeAnaly
 #endif
 }
 
-void X86LLSCT::validateInstr(const MachineInstr &MI) {
+void X86PTeX::validateInstr(const MachineInstr &MI) {
   // Validate operands.
   for (const MachineOperand &MO : MI.operands())
     validateOperand(MO);
 }
 
-void X86LLSCT::validateOperand(const MachineOperand &MO) {
+void X86PTeX::validateOperand(const MachineOperand &MO) {
   assert(!(MO.isReg() && MO.isUndef() && MO.isPublic()) && "Found an undef+public operand!");
 
   if (MO.isReg() && X86::regAlwaysPublic(MO.getReg(), *TRI))
     assert(MO.isPublic() && "Operand with always-public register was not marked public!");
 }
 
-bool X86LLSCT::declassifyBlockEntries(MachineBasicBlock &MBB, const X86::PrivacyTypeAnalysis &PTA) {
+bool X86PTeX::declassifyBlockEntries(MachineBasicBlock &MBB, const X86::PTeXAnalysis &PTA) {
   // TODO: Make TRI, TII members.
   const TargetRegisterInfo *TRI = MBB.getParent()->getSubtarget().getRegisterInfo();
   const TargetInstrInfo *TII = MBB.getParent()->getSubtarget().getInstrInfo();
@@ -1127,11 +1095,11 @@ bool X86LLSCT::declassifyBlockEntries(MachineBasicBlock &MBB, const X86::Privacy
   return !NewPubRegs.empty();
 }
 
-INITIALIZE_PASS_BEGIN(X86LLSCT, PASS_KEY "-pass",
+INITIALIZE_PASS_BEGIN(X86PTeX, PASS_KEY "-pass",
 		      "X86 LLSCT pass", false, false)
-INITIALIZE_PASS_END(X86LLSCT, PASS_KEY "-pass",
+INITIALIZE_PASS_END(X86PTeX, PASS_KEY "-pass",
 		    "X86 LLSCT pass", false, false)
 
-FunctionPass *llvm::createX86LLSCTPass(bool Instrument) {
-  return new X86LLSCT(Instrument);
+FunctionPass *llvm::createX86PTeXPass(bool Instrument) {
+  return new X86PTeX(Instrument);
 }

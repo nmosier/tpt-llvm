@@ -163,7 +163,7 @@ FunctionPass *createX86LoadValueInjectionRetHardeningPass();
 FunctionPass *createX86SpeculativeLoadHardeningPass();
 FunctionPass *createX86SpeculativeExecutionSideEffectSuppression();
 
-FunctionPass *createX86LLSCTPass(bool Instrument);
+FunctionPass *createX86PTeXPass(bool Instrument);
 FunctionPass *createX86AnnotatePointersPass();
 
 // PTEX-TODO: Remove.
@@ -201,7 +201,7 @@ void initializeX86ReturnThunksPass(PassRegistry &);
 void initializeX86SpeculativeExecutionSideEffectSuppressionPass(PassRegistry &);
 void initializeX86SpeculativeLoadHardeningPassPass(PassRegistry &);
 void initializeX86TileConfigPass(PassRegistry &);
-void initializeX86LLSCTPass(PassRegistry &);
+void initializeX86PTeXPass(PassRegistry &);
 void initializeX86AnnotatePointersPass(PassRegistry &);
 // PTEX-TODO: Remove.
 void initializeX86ReturnHardeningPass(PassRegistry &);

@@ -97,8 +97,8 @@ set(sources
   X86PTeX.cpp
   X86AnnotatePublic.cpp
   X86LLSCTUtil.cpp # PTEX-TODO: Consolidate.
-  X86PrivacyTypeAnalysis.cpp
-  X86PrivacyTypeAnalysis2.cpp
+  X86PrivacyTypeAnalysis.cpp # PTEX-TODO: Remove.
+  X86PTeXAnalysis.cpp
   X86ReturnHardening.cpp # PTEX-TODO: Remove.
   )
 

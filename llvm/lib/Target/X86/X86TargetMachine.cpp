@@ -104,7 +104,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeX86Target() {
   initializePseudoProbeInserterPass(PR);
   initializeX86ReturnThunksPass(PR);
   initializeX86DAGToDAGISelPass(PR);
-  initializeX86LLSCTPass(PR);
+  initializeX86PTeXPass(PR);
   initializeX86AnnotatePointersPass(PR);
 }
 
@@ -533,7 +533,7 @@ void X86PassConfig::addPreRegAlloc() {
   addPass(createX86DynAllocaExpander());
 
   // PTEX-EXPERIMENTAL: LLT printing.
-  addPass(createX86LLSCTPass(/*Instrument*/false));
+  addPass(createX86PTeXPass(/*Instrument*/false));
   addPass(createX86AnnotatePointersPass());
 
 #if 0
@@ -563,7 +563,7 @@ void X86PassConfig::addPostRegAlloc() {
     addPass(createX86LoadValueInjectionLoadHardeningPass());
 
   // PTeX: Stage 1.
-  addPass(createX86LLSCTPass(/*Instrument*/true));
+  addPass(createX86PTeXPass(/*Instrument*/true));
   addPass(createX86AnnotatePointersPass());
 }
 
@@ -596,7 +596,7 @@ void X86PassConfig::addPreEmitPass() {
   // PTEX-TODO: May need to move this even later to avoid missing
   // late-inserted instructions.
   // PTEX-TODO: Can re-enable instrumentation or assert no instrumentation required to find LLVM bugs.
-  addPass(createX86LLSCTPass(/*Instrument*/false));
+  addPass(createX86PTeXPass(/*Instrument*/false));
 }
 
 void X86PassConfig::addPreEmitPass2() {

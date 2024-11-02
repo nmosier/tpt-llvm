@@ -1,5 +1,5 @@
 #include "X86PrivacyTypeAnalysis.h"
-#include "X86PrivacyTypeAnalysis2.h"
+#include "X86PTeXAnalysis.h"
 
 #include <array>
 
@@ -264,7 +264,7 @@ static void markAllOpsPublic(MachineInstr &MI) {
 
 namespace X86 {
 
-void PrivacyTypeAnalysis::initTransmittedUses(MachineInstr &MI) {
+void PTeXAnalysis::initTransmittedUses(MachineInstr &MI) {
   if (MI.isCall())
     markOpPublic(MI.getOperand(0));
   
@@ -278,26 +278,26 @@ void PrivacyTypeAnalysis::initTransmittedUses(MachineInstr &MI) {
   }
 }
 
-void PrivacyTypeAnalysis::initPointerLoadsOrStores(MachineInstr &MI) {
+void PTeXAnalysis::initPointerLoadsOrStores(MachineInstr &MI) {
   for (MachineMemOperand *MMO : MI.memoperands())
     if (MMO->getType().isPointer())
       markAllOpsPublic(MI);
 }
 
-void PrivacyTypeAnalysis::initAlwaysPublicRegs(MachineInstr &MI) {
+void PTeXAnalysis::initAlwaysPublicRegs(MachineInstr &MI) {
   const TargetRegisterInfo &TRI = *MI.getParent()->getParent()->getSubtarget().getRegisterInfo();
   for (MachineOperand &MO : MI.operands())
     if (MO.isReg() && regAlwaysPublic(MO.getReg(), TRI))
       MO.setIsPublic();  
 }
 
-void PrivacyTypeAnalysis::initFrameSetupAndDestroy(MachineInstr &MI) {
+void PTeXAnalysis::initFrameSetupAndDestroy(MachineInstr &MI) {
   if (MI.getFlag(MachineInstr::FrameSetup) ||
       MI.getFlag(MachineInstr::FrameDestroy))
     markAllOpsPublic(MI);
 }
 
-void PrivacyTypeAnalysis::initPointerCallArgs(MachineInstr &MI) {
+void PTeXAnalysis::initPointerCallArgs(MachineInstr &MI) {
   if (!MI.isCall())
     return;
 
@@ -349,7 +349,7 @@ void PrivacyTypeAnalysis::initPointerCallArgs(MachineInstr &MI) {
         MO.setIsPublic();
 }
 
-void PrivacyTypeAnalysis::initPointerTypes(MachineInstr &MI) {
+void PTeXAnalysis::initPointerTypes(MachineInstr &MI) {
   const MachineRegisterInfo &MRI = MF.getRegInfo();  
   for (MachineOperand &MO : MI.operands()) {
     // PTEX-FIXME: MI.mayLoadOrStore() is too aggressive.
@@ -362,7 +362,7 @@ void PrivacyTypeAnalysis::initPointerTypes(MachineInstr &MI) {
   }
 }
 
-void PrivacyTypeAnalysis::initPointerReturnValue(MachineInstr &MI) {
+void PTeXAnalysis::initPointerReturnValue(MachineInstr &MI) {
   if (!MI.isReturn())
     return;
 
@@ -374,14 +374,14 @@ void PrivacyTypeAnalysis::initPointerReturnValue(MachineInstr &MI) {
       MO.setIsPublic();
 }
 
-void PrivacyTypeAnalysis::initPublicInstr(MachineInstr &MI) {
+void PTeXAnalysis::initPublicInstr(MachineInstr &MI) {
   if (MI.getFlag(MachineInstr::TPEPubM))
     for (MachineOperand &MO : MI.operands())
       if (MO.isReg() && !MO.isUndef())
         MO.setIsPublic();
 }
 
-void PrivacyTypeAnalysis::initGOTLoads(MachineInstr &MI) {
+void PTeXAnalysis::initGOTLoads(MachineInstr &MI) {
   if (!MI.mayLoad())
     return;
 
@@ -396,7 +396,7 @@ void PrivacyTypeAnalysis::initGOTLoads(MachineInstr &MI) {
   setInstrPublic(MI);
 }
 
-void PrivacyTypeAnalysis::init() {
+void PTeXAnalysis::init() {
   const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
   
   // Initialize operand types.
@@ -427,22 +427,22 @@ void PrivacyTypeAnalysis::init() {
     In[&MF.front()].addReg(*CSRIt);
 }
 
-bool PrivacyTypeAnalysis::forward() {
+bool PTeXAnalysis::forward() {
   ForwardPrivacyTypeAnalysis Forward(MF, In, Out);
   return Forward.run();
 }
 
-bool PrivacyTypeAnalysis::backward() {
+bool PTeXAnalysis::backward() {
   BackwardPrivacyTypeAnalysis Backward(MF, In, Out);
   return Backward.run();
 }
 
-bool PrivacyTypeAnalysis::stack() {
+bool PTeXAnalysis::stack() {
   StackPrivacyAnalysis Stack(MF);
   return Stack.run();
 }
 
-bool PrivacyTypeAnalysis::run() {
+bool PTeXAnalysis::run() {
   init();
 
   bool OverallChanged = false;
@@ -657,7 +657,7 @@ bool DirectionalPrivacyTypeAnalysis<Base>::run() {
   return ParentChanged;
 }
 
-void PrivacyTypeAnalysis::print(raw_ostream &os) const {
+void PTeXAnalysis::print(raw_ostream &os) const {
   os << "===== Privacy Types for Function \"" << MF.getName() << "\" =====\n\n";
 
   auto PrintBlockNames = [&] (const auto &range) {

@@ -87,11 +87,11 @@ namespace X86 {
 bool regAlwaysPublic(Register Reg, const TargetRegisterInfo &TRI);
 
 // TODO: Rename to 'BidirectionalPrivacyTypeAnalysis'.
-class PrivacyTypeAnalysis {
+class PTeXAnalysis {
 public:
   using PubMap = std::unordered_map<MachineBasicBlock *, PublicPhysRegs>;
 
-  PrivacyTypeAnalysis(MachineFunction &MF) : MF(MF) {}
+  PTeXAnalysis(MachineFunction &MF) : MF(MF) {}
 
   bool run();
   void print(raw_ostream &OS) const;
@@ -124,7 +124,7 @@ private:
 template <class Base>
 class DirectionalPrivacyTypeAnalysis {
 protected:
-  using PubMap = PrivacyTypeAnalysis::PubMap;
+  using PubMap = PTeXAnalysis::PubMap;
 
   MachineFunction &MF;
   PubMap &ParentIn;

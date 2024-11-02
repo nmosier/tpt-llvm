@@ -529,12 +529,7 @@ public:
 
   void setIsUndef(bool Val = true) {
     assert(isReg() && "Wrong MachineOperand mutator");
-#if 0
-    assert(!(Val && isPublic()) && "Can't mark public operand undef");
-#else
-# warning "FIXME"
     setIsPublic(false);
-#endif
     IsUndef = Val;
   }
 
@@ -552,11 +547,13 @@ public:
 
   void setIsDebug(bool Val = true) {
     assert(isReg() && !IsDef && "Wrong MachineOperand mutator");
+    setIsPublic(false);
     IsDebug = Val;
   }
 
   void setIsPublic(bool Val = true) {
     assert(isReg() && "Wrong MachineOperand mutator");
+    assert(!(Val && isUse()) && "Can't mark use operand public");
     assert(!(Val && isUndef()) && "Can't mark undef operand public");
     assert(!(Val && isDebug()) && "Can't mark debug operand public");
     IsPublic = Val;
