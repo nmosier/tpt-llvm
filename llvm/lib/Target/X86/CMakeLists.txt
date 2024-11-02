@@ -99,6 +99,7 @@ set(sources
   X86LLSCTUtil.cpp # PTEX-TODO: Consolidate.
   X86PrivacyTypeAnalysis.cpp # PTEX-TODO: Remove.
   X86PTeXAnalysis.cpp
+  X86PublicPhysRegs.cpp
   X86ReturnHardening.cpp # PTEX-TODO: Remove.
   )
 

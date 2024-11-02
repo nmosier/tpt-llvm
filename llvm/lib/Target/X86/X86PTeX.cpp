@@ -21,12 +21,14 @@
 #include "X86PrivacyTypeAnalysis.h"
 #include "X86PTeXAnalysis.h"
 #include "X86LLSCTUtil.h"
+#include "X86PublicPhysRegs.h"
 
 #define PTEX_DEBUG 1
 
 using namespace llvm;
 
 using X86::PrivacyMask;
+using X86::PublicPhysRegs;
 
 #define PASS_KEY "x86-ptex"
 #define DEBUG_TYPE PASS_KEY
