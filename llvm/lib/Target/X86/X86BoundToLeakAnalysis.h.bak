@@ -3,21 +3,21 @@
 #include <unordered_map>
 
 #include <llvm/CodeGen/MachineFunction.h>
-#include "X86PrivacyTypeAnalysis2.h"
+#include <llvm/CodeGen/MachineBasicBlock.h>
 
 namespace llvm::X86 {
 
 class BoundToLeakAnalysis {
 public:
   // TODO: Share with PrivacyTypeAnalysis.
-  using PubMap = std::unordered_map<MachineBasicBlock *, PublicPhysRegs>;
+  using PubMap = std::unordered_map<MachineBasicBlock *, LivePhysRegs>;
 
   BoundToLeakAnalysis(MachineFunction &MF) : MF(MF) {}
 
   bool run();
 
-  const PublicPhysRegs &getIn(MachineBasicBlock *MBB) const { return In.at(MBB); }
-  const PublicPhysRegs &getOut(MachineBasicBlock *MBB) const { return Out.at(MBB); }
+  const LivePhysRegs &getIn(MachineBasicBlock *MBB) const { return In.at(MBB); }
+  const LivePhysRegs &getOut(MachineBasicBlock *MBB) const { return Out.at(MBB); }
   
 private:
   MachineFunction &MF;
@@ -27,7 +27,7 @@ private:
   void init();
   bool backward();
   bool block(MachineBasicBlock &MBB);
-  bool instruction(MachineInstr &MI, PublicPhysRegs &PubRegs);
+  bool instruction(MachineInstr &MI, LivePhysRegs &PubRegs);
 };
 
 }

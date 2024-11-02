@@ -10,7 +10,7 @@
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "X86PrivacyTypeAnalysis.h"
 #include "llvm/CodeGen/RDFGraph.h"
-#include "X86BoundToLeakAnalysis.h"
+#include "X86PrivacyTypeAnalysis.h"
 
 #define PASS_KEY "x86-annotate-public"
 #define DEBUG_TYPE PASS_KEY
@@ -86,7 +86,10 @@ bool X86AnnotatePointers::runOnMachineFunction(MachineFunction &MF) {
     break;
 
   case AnnotateBoundToLeak:
-    detectBoundToLeakInstrs(MF, AnnotateInstrs);
+    // Bound-to-leak is not supported for SSA
+    // machine functions.
+    if (!MF.getRegInfo().isSSA())
+      detectBoundToLeakInstrs(MF, AnnotateInstrs);
     break;
     
   default:
@@ -103,7 +106,40 @@ bool X86AnnotatePointers::runOnMachineFunction(MachineFunction &MF) {
   return Changed;
 }
 
-void X86AnnotatePointers::detectPointerLoads(MachineFunction &MF, InstrSet &PointerLoads) {
+static bool detectPointerLoadsVirtInstr(const MachineInstr &MI, const MachineRegisterInfo &MRI) {
+  // Check if this instruction has any pointer-typed data operands.
+  auto IsVirtPtrData = [&] (const MachineOperand &MO) -> bool {
+    // Is it a pointer-typed virtual register?
+    if (!(MO.isReg() && MRI.getType(MO.getReg()).isPointer()))
+      return false;
+
+    // Is this an address operand, not a data operand?
+    if (MI.mayLoadOrStore())
+      if (const int MemIdx = X86::getMemRefBeginIdx(MI); MemIdx >= 0)
+        for (int i = MemIdx; i < MemIdx + X86::AddrNumOperands; ++i)
+          if (&MO == &MI.getOperand(i))
+            return false;
+
+    // It's a data operand.
+    return true;
+  };
+
+  // Does this instruction have any pointer-typed data operands?
+  if (!llvm::any_of(MI.operands(), IsVirtPtrData))
+    return false;
+
+  return true;
+}
+
+static void detectPointerLoadsVirt(MachineFunction &MF, auto &PointerLoads) {
+  const MachineRegisterInfo &MRI = MF.getRegInfo();
+  for (MachineBasicBlock &MBB : MF)
+    for (MachineInstr &MI : MBB)
+      if (detectPointerLoadsVirtInstr(MI, MRI))
+        PointerLoads.insert(&MI);
+}
+
+static void detectPointerLoadsPhys(MachineFunction &MF, auto &PointerLoads) {
   const auto &TRI = *MF.getSubtarget().getRegisterInfo();
 
   std::unordered_map<MachineBasicBlock *, LivePhysRegs> Map;
@@ -173,21 +209,126 @@ void X86AnnotatePointers::detectPointerLoads(MachineFunction &MF, InstrSet &Poin
       const size_t NewSize = llvm::size(PtrRegs);
       Changed |= (OldSize != NewSize);
     }
-  } while (Changed);
+  } while (Changed);  
+}
+
+static void detectPointerLoadsMemOps(MachineFunction &MF, auto &PointerLoads) {
+  for (MachineBasicBlock &MBB : MF) {
+    for (MachineInstr &MI : MBB) {
+      const bool AnyPtr = llvm::any_of(MI.memoperands(), [] (const MachineMemOperand *MMO) -> bool {
+        return MMO->getType().isPointer();
+      });
+      if (AnyPtr) {
+        PointerLoads.insert(&MI);
+      }
+    }
+  }
+}
+
+void X86AnnotatePointers::detectPointerLoads(MachineFunction &MF, InstrSet &PointerLoads) {
+  if (MF.getRegInfo().isSSA()) {
+    detectPointerLoadsVirt(MF, PointerLoads);
+  } else {
+    detectPointerLoadsPhys(MF, PointerLoads);
+  }
+  detectPointerLoadsMemOps(MF, PointerLoads);
 }
 
 void X86AnnotatePointers::detectBoundToLeakInstrs(MachineFunction &MF, InstrSet &AnnotateInstrs) {
-  X86::BoundToLeakAnalysis BTLA(MF);
-  BTLA.run();
+  const TargetRegisterInfo &TRI = *MF.getSubtarget().getRegisterInfo();
+  std::unordered_map<MachineBasicBlock *, LivePhysRegs> In, Out;
 
-  // Copy instructions that were marked public to now be annotated.
+  // Initialize ins and outs.
   for (MachineBasicBlock &MBB : MF) {
-    for (MachineInstr &MI : MBB) {
-      if (llvm::any_of(MI.operands(), [] (const MachineOperand &MO) -> bool {
-        return MO.isReg() && MO.isDef() && !MO.isImplicit() && !MO.isUndef() && MO.isPublic();
-      })) {
+    In[&MBB].init(TRI);
+    Out[&MBB].init(TRI);
+    In[&MBB].addLiveIns(MBB);
+    if (!MBB.succ_empty())
+      Out[&MBB].addLiveOuts(MBB);
+  }
+
+  const auto CountPubRegs = [] (const auto &Map) -> size_t {
+    size_t n = 0;
+    for (const auto &[_, PubRegs] : Map)
+      n += llvm::size(PubRegs);
+    return n;
+  };
+
+  const auto TotalPubRegs = [&In, &Out, CountPubRegs] () -> size_t {
+    return CountPubRegs(In) + CountPubRegs(Out);
+  };
+
+  const auto StepInstr = [&] (const MachineInstr &MI, LivePhysRegs &PubRegs) {
+    // Remove any register defs.
+    PubRegs.removeDefs(MI);
+
+    // Add any leaked operands.
+    const auto MarkUsePublic = [&] (const MachineOperand &MO) {
+      if (MO.isReg() && MO.isUse() && !MO.isUndef())
+        PubRegs.addReg(MO.getReg());
+    };
+    if (MI.isCall())
+      for (const MachineOperand &MO : MI.operands())
+        if (MO.isReg() && !MO.isImplicit())
+          MarkUsePublic(MO);
+#if 0
+    if (MI.isBranch())
+      for (const MachineOperand &MO : MI.operands())
+        MarkUsePublic(MO);
+#endif
+    const int MemIdx = X86::getMemRefBeginIdx(MI);
+    if (MI.mayLoadOrStore() && MemIdx >= 0) {
+      MarkUsePublic(MI.getOperand(MemIdx + X86::AddrBaseReg));
+      MarkUsePublic(MI.getOperand(MemIdx + X86::AddrIndexReg));
+    }
+  };
+
+  // Dataflow pass.
+  while (true) {
+    const size_t OrigPubRegs = TotalPubRegs();
+    
+    for (MachineBasicBlock &MBB : MF) {
+      // Remove any pub-out registers that *aren't* pub-out in at least one successor.
+      for (MachineBasicBlock *SuccMBB : MBB.successors())
+        for (MCPhysReg Reg : In[SuccMBB])
+          Out[&MBB].removeReg(Reg);
+
+      // Transfer backwards across block.
+      LivePhysRegs PubRegs(TRI);
+      for (MCPhysReg PubReg : Out[&MBB])
+        PubRegs.addReg(PubReg);
+      for (MachineInstr &MI : llvm::reverse(MBB))
+        StepInstr(MI, PubRegs);
+
+      // Set pub-ins.
+      In[&MBB].clear();
+      for (MCPhysReg PubReg : PubRegs)
+        In[&MBB].addReg(PubReg);
+    }
+
+    const size_t NewPubRegs = TotalPubRegs();
+    assert(NewPubRegs <= OrigPubRegs);
+    if (NewPubRegs == OrigPubRegs)
+      break;
+  }
+
+  // Copy out instructions all of whose explicit outputs are marked public.
+  for (MachineBasicBlock &MBB : MF) {
+    LivePhysRegs PubRegs(TRI);
+    for (MCPhysReg PubReg : Out[&MBB])
+      PubRegs.addReg(PubReg);
+    for (MachineInstr &MI : llvm::reverse(MBB)) {
+      const auto EligibleMO = [] (const MachineOperand &MO) -> bool {
+        return MO.isReg() && MO.isDef() && !MO.isImplicit() && !MO.isUndef();
+      };
+      const auto NumEligible = llvm::count_if(MI.operands(), EligibleMO);
+      const auto NumEligiblePub = llvm::count_if(MI.operands(), [&] (const MachineOperand &MO) -> bool {
+        return EligibleMO(MO) && PubRegs.contains(MO.getReg());
+      });
+      if (NumEligible == NumEligiblePub && NumEligiblePub == 1)
         AnnotateInstrs.insert(&MI);
-      }
+
+      StepInstr(MI, PubRegs);
     }
   }
 }

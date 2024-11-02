@@ -95,7 +95,7 @@ set(sources
   X86WinEHState.cpp
   X86InsertWait.cpp
   X86PTeX.cpp
-  X86AnnotatePointers.cpp
+  X86AnnotatePublic.cpp
   X86LLSCTUtil.cpp # PTEX-TODO: Consolidate.
   X86PrivacyTypeAnalysis.cpp
   X86PrivacyTypeAnalysis2.cpp

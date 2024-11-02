@@ -534,6 +534,7 @@ void X86PassConfig::addPreRegAlloc() {
 
   // PTEX-EXPERIMENTAL: LLT printing.
   addPass(createX86LLSCTPass(/*Instrument*/false));
+  addPass(createX86AnnotatePointersPass());
 
 #if 0
   if (getOptLevel() != CodeGenOpt::None)
