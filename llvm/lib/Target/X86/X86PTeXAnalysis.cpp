@@ -347,25 +347,36 @@ bool PTeXAnalysis::run() {
   return OverallChanged;
 }
 
+template <class Base>
+PublicPhysRegs DirectionalPrivacyTypeAnalysis<Base>::computeTop() const {
+  PublicPhysRegs top(MF.getSubtarget().getRegisterInfo());
+
+  // Add all callee-saved registers.
+  for (const MCPhysReg *CSR = MF.getRegInfo().getCalleeSavedRegs(); *CSR; ++CSR)
+    top.addReg(*CSR);
+
+  // Add all registers that are uses/defs of any instruction.
+  for (const MachineBasicBlock &MBB : MF) {
+    for (const MachineInstr &MI : MBB) {
+      for (const MachineOperand &MO : MI.operands()) {
+        if (MO.isReg()) {
+          top.addReg(MO.getReg());
+        }
+      }
+    }
+  }
+
+  return top;
+}
+  
+
 void ForwardPrivacyTypeAnalysis::init() {
   const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+  const PublicPhysRegs top = computeTop();
 
   for (MachineBasicBlock &MBB : MF) {
-    // Allocate pub-ins and pub-outs.
-    In[&MBB].init(TRI);
-    Out[&MBB].init(TRI);
-
-    // Optimistically initialize the pub-ins and pub-outs to the live-ins and live-outs
-    // of all other blocks.
-    // TODO: Need to change this.
-    In[&MBB].addLiveIns(MBB);
-    Out[&MBB].addLiveOuts(MBB);
-
-    // Also add all the callee-saved registers.
-    for (const MCPhysReg *CSR = TRI->getCalleeSavedRegs(&MF); *CSR; ++CSR) {
-      In[&MBB].addReg(*CSR);
-      Out[&MBB].addReg(*CSR);
-    }
+    In[&MBB] = top;
+    Out[&MBB] = top;
 
     // Conservatively initialize the pub-ins of entry blocks to the parent analysis' pub-ins. We conservatively consider entry
     // blocks to be anything without a predecessor.
@@ -427,22 +438,11 @@ bool ForwardPrivacyTypeAnalysis::instruction(MachineInstr &MI, PublicPhysRegs &P
 // TODO: Can factor out most of this code.
 void BackwardPrivacyTypeAnalysis::init() {
   const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+  const PublicPhysRegs top = computeTop();
 
   for (MachineBasicBlock &MBB : MF) {
-    // Allocate pub-ins and pub-outs.
-    In[&MBB].init(TRI);
-    Out[&MBB].init(TRI);
-
-    // Optimistically initialize the pub-ins and pub-outs to the live-ins and live-outs
-    // of all other blocks.
-    In[&MBB].addLiveIns(MBB);
-    Out[&MBB].addLiveOuts(MBB);
-
-    // Also add all the callee-saved registers.
-    for (const MCPhysReg *CSR = TRI->getCalleeSavedRegs(&MF); *CSR; ++CSR) {
-      In[&MBB].addReg(*CSR);
-      Out[&MBB].addReg(*CSR);
-    }    
+    In[&MBB] = top;
+    Out[&MBB] = top;
 
     // Conservatively initialize the pub-outs of exit blocks to the parent analysis' pub-outs.
     // We consider anything without a successor to be an exit block.

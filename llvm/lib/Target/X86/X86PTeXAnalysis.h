@@ -117,6 +117,8 @@ protected:
 
   [[nodiscard]] bool setInstrPublic(MachineInstr &MI) const;
 
+  PublicPhysRegs computeTop() const;
+
 private:
   void mergeIntoParent();
 

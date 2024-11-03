@@ -417,10 +417,12 @@ MCPhysReg X86PTeX::spillPrivateCSR(MCPhysReg SpillReg, MachineInstr &MI, auto Ge
   const TargetRegisterInfo *TRI = Subtarget.getRegisterInfo();
   const TargetInstrInfo *TII = Subtarget.getInstrInfo();
   const auto *RegClass = TRI->getMinimalPhysRegClass(SpillReg);
+  // TODO: Rephrase debug message -- we won't always spill here.
   LLVM_DEBUG(dbgs() << "Spilling private CSR " << TRI->getRegAsmName(SpillReg) << "\n");
 
   // Allocate or get spill slot for register.
   PrivateSpillInfo &PSI = *GetSpillInfo(&MI, SpillReg);
+  // TODO: Allocate spill slot only if we're going to actually store it.
   const int FrameIndex = PSI.getOrAllocateSpillSlot(SpillReg, MF);
 
   // Is this register live before the call?
@@ -504,8 +506,9 @@ bool X86PTeX::eliminatePrivateCSRsForCall(MachineInstr &MI, PublicPhysRegs &PubR
 
 bool X86PTeX::eliminatePrivateCSRs(MachineFunction &MF, const X86::PTeXAnalysis &PTA) {
   bool Changed = false;
-  const auto *TII = MF.getSubtarget().getInstrInfo();
-  const auto *TRI = MF.getSubtarget().getRegisterInfo();
+  const TargetInstrInfo *TII = MF.getSubtarget().getInstrInfo();
+  const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+  const MachineRegisterInfo &MRI = MF.getRegInfo();
 
   // TODO: This assertion really needs to be made much earlier on. Along with !isSSA().
   assert(MF.getRegInfo().tracksLiveness());
@@ -571,14 +574,25 @@ bool X86PTeX::eliminatePrivateCSRs(MachineFunction &MF, const X86::PTeXAnalysis 
 
     // Is the register live at the landingpad entry?
     const LandingPadInfo *LPI = InvokeToLandingPadIt->second;
-    if (LPI->LandingPadBlock->isLiveIn(Reg)) {
-      return &InvokePrivateSpillInfo[LPI];
+    {
+      LivePhysRegs LPR(*TRI);
+      LPR.addLiveIns(*LPI->LandingPadBlock);
+      if (!LPR.available(MRI, Reg))
+        return &InvokePrivateSpillInfo[LPI];
     }
 
+#ifndef NDEBUG
     // Make sure no registers errantly overlap.
-    assert(llvm::none_of(LPI->LandingPadBlock->liveins(), [&] (const auto &p) -> bool {
-      return TRI->regsOverlap(p.PhysReg, Reg);
-    }));
+    for (const auto &p : LPI->LandingPadBlock->liveins()) {
+      if (TRI->regsOverlap(p.PhysReg, Reg)) {
+        errs() << "registers overlap: " << TRI->getRegAsmName(p.PhysReg) << " "
+               << TRI->getRegAsmName(Reg) << "\n";
+        errs() << "pub-ins to block: " << PTA.getIn(MI->getParent()) << "\n";
+        errs() << *MI->getParent() << "\n";
+      }
+      assert(!TRI->regsOverlap(p.PhysReg, Reg));
+    }
+#endif
 
     // Treat as call.
     return &CallPrivateSpillInfo[MI];
