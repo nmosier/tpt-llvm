@@ -17,8 +17,6 @@ public:
   using const_iterator = LivePhysRegs::const_iterator;
 
   void init(const TargetRegisterInfo *TRI);
-  void addLiveIns(const MachineBasicBlock &MBB) { LPR.addLiveIns(MBB); }
-  void addLiveOuts(const MachineBasicBlock &MBB) { LPR.addLiveOuts(MBB); }
   void clear() { LPR.clear(); }
   bool addReg(MCPhysReg PubReg);
   bool addRegs(const PublicPhysRegs &From);
@@ -27,7 +25,7 @@ public:
   bool intersect(const PublicPhysRegs &Other);
 
   void stepForward(const MachineInstr &MI);
-  void stepBackward(const MachineInstr &MI);
+  void stepBackward(const MachineInstr &MI); // Note: imprecise.
   void removeAllDefs(const MachineInstr &MI);
   void updateDefs(const MachineInstr &MI);
 
@@ -47,5 +45,7 @@ public:
 
   static bool regAlwaysPublic(Register Reg, const TargetRegisterInfo &TRI);
 };
+
+
 
 }

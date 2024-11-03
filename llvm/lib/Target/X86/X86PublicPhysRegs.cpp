@@ -4,9 +4,16 @@
 
 namespace llvm::X86 {
 
-// TODO: Should be able to remove NoRegister from this set.
-static std::array<Register, 5> AlwaysPublicRegisters = {
-  X86::NoRegister, X86::RSP, X86::RIP, X86::SSP, X86::MXCSR,
+static MCPhysReg ProtectableRegisters[] = {
+  X86::RAX, X86::RBX, X86::RCX, X86::RDX,
+  X86::RBP, X86::RDI, X86::RSI,
+  X86::R8, X86::R9, X86::R10, X86::R11,
+  X86::R12, X86::R13, X86::R14, X86::R15,
+  X86::EFLAGS,
+  X86::YMM0, X86::YMM1, X86::YMM2, X86::YMM3,
+  X86::YMM4, X86::YMM5, X86::YMM6, X86::YMM7,
+  X86::YMM8, X86::YMM9, X86::YMM10, X86::YMM11,
+  X86::YMM12, X86::YMM13, X86::YMM14, X86::YMM15,
 };
 
 bool PublicPhysRegs::regAlwaysPublic(Register Reg, const TargetRegisterInfo &TRI) {
@@ -14,10 +21,10 @@ bool PublicPhysRegs::regAlwaysPublic(Register Reg, const TargetRegisterInfo &TRI
     return false;
   if (!Reg.isValid())
     return true;
-  for (Register PubReg : AlwaysPublicRegisters)
-    if (PubReg != X86::NoRegister && TRI.isSubRegisterEq(PubReg, Reg))
-      return true;
-  return false;
+  for (Register ProtectableReg : ProtectableRegisters)
+    if (TRI.isSubRegisterEq(ProtectableReg, Reg))
+      return false;
+  return true;
 }
 
 
