@@ -553,7 +553,6 @@ public:
 
   void setIsPublic(bool Val = true) {
     assert(isReg() && "Wrong MachineOperand mutator");
-    assert(!(Val && isUse()) && "Can't mark use operand public");
     assert(!(Val && isUndef()) && "Can't mark undef operand public");
     assert(!(Val && isDebug()) && "Can't mark debug operand public");
     IsPublic = Val;
