@@ -43,11 +43,23 @@ static cl::opt<bool> FullDefDeclassification {
   cl::Hidden,
 };
 
+enum Mode {
+  CTS,
+  CT,
+  CTDecl,
+};
+
+static cl::opt<Mode> AnalysisType {
+  PASS_KEY "-type",
+  cl::desc("PTeX analysis type"),
+  cl::init(CT),
+  cl::values(
+      clEnumValN(CTS, "cts", "Static constant-time protection types"),
+      clEnumValN(CT, "ct", "Constant-time protection types"),
+      clEnumValN(CTDecl, "ctdecl", "Constant-time w/ declassification protection types")),
+};
+
 namespace llvm {
-
-namespace X86 {
-
-}
 
 bool setInstrPublic(MachineInstr &MI) {
   bool Changed = false;
@@ -391,8 +403,19 @@ bool ForwardPrivacyTypeAnalysis::block(MachineBasicBlock &MBB) {
   // Meet block pub-ins. This means intersecting In[MBB] with In[PredMBB] for each predecessor PredMBB.
   // Note that this is safe to apply to all blocks, including entry blocks, because entries have no predecessors.
   // Thus, the pub-ins of entries will not change.
-  for (MachineBasicBlock *PredMBB : MBB.predecessors())
-    Changed |= In[&MBB].intersect(Out[PredMBB]);
+  for (MachineBasicBlock *PredMBB : MBB.predecessors()) {
+    switch (AnalysisType) {
+    case CTS:
+      Changed |= In[&MBB].addRegs(Out[PredMBB]);
+      break;
+    case CT:
+    case CTDecl:
+      Changed |= In[&MBB].intersect(Out[PredMBB]);
+      break;
+    default:
+      llvm_unreachable("bad AnalysisType!");
+    }
+  }
 
   // Now, transfer across the block.
   PublicPhysRegs PubRegs = In[&MBB];
@@ -469,8 +492,104 @@ bool BackwardPrivacyTypeAnalysis::block(MachineBasicBlock &MBB) {
   return Changed;
 }
 
+static bool backpropSafeForInst(const MachineInstr &MI) {
+  if (AnalysisType != CTDecl)
+    return true;
+
+  const TargetInstrInfo *TII = MI.getParent()->getParent()->getSubtarget().getInstrInfo();
+
+  // Special cases: MOVSX, MOVZX
+  const StringRef OpName = TII->getName(MI.getOpcode());
+  if (OpName.starts_with("MOV"))
+    return true;
+  
+  const unsigned NumProtectedUses = llvm::count_if(MI.operands(), [] (const MachineOperand &MO) -> bool {
+    return MO.isReg() && MO.isUse() && !MO.isPublic();
+  });
+
+  if (MI.mayLoad()) {
+    // If this is a memory intruction, then allow no protected inputs.
+    if (NumProtectedUses != 0)
+      return false;
+  } else {
+    // If this is a non-memory instruction, then allow exactly one
+    // protected input.
+    if (NumProtectedUses != 1)
+      return false;
+  }
+
+  switch (MI.getOpcode()) {
+#define MAKE_CASE(name) case X86::name:
+#define STD_ARITH(base, X)                      \
+    X(base##8rr)                                \
+        X(base##8ri)                            \
+        X(base##8rm)                            \
+        X(base##8mr)                            \
+        X(base##8mi)                            \
+        X(base##16rr)                           \
+        X(base##16rm)                           \
+        X(base##16mr)                           \
+        X(base##16ri8)                          \
+        X(base##16ri)                           \
+        X(base##16mi8)                          \
+        X(base##16mi)                           \
+        X(base##32rr)                           \
+        X(base##32rm)                           \
+        X(base##32mr)                           \
+        X(base##32ri8)                          \
+        X(base##32ri)                           \
+        X(base##32mi8)                          \
+        X(base##32mi)                           \
+        X(base##64rr)                           \
+        X(base##64rm)                           \
+        X(base##64mr)                           \
+        X(base##64ri8)                          \
+        X(base##64ri32)                         \
+        X(base##64mi8)                          \
+        X(base##64mi32)
+
+#define STD_UNOP_SZ(base, size, X)              \
+    X(base##size##r)                            \
+        X(base##size##m)
+    
+#define STD_UNOP(base, X)                        \
+    STD_UNOP_SZ(base, 8, X)                      \
+        STD_UNOP_SZ(base, 16, X)                 \
+        STD_UNOP_SZ(base, 32, X)                 \
+        STD_UNOP_SZ(base, 64, X)
+        
+    
+  case X86::MOV64rm:
+  case X86::MOV64rr:
+  case X86::COPY:
+  case X86::LEA64r:
+  case X86::LEA32r:
+  case X86::LEA16r:
+    STD_ARITH(ADD, MAKE_CASE)
+        STD_ARITH(SUB, MAKE_CASE)
+        STD_ARITH(XOR, MAKE_CASE)
+        STD_UNOP(NEG, MAKE_CASE)
+        STD_UNOP(NOT, MAKE_CASE)
+        STD_UNOP(INC, MAKE_CASE)
+        STD_UNOP(DEC, MAKE_CASE)
+
+        LLVM_DEBUG(dbgs() << "backpropagation safe for instruction: " << MI);
+        return true;
+  default:
+#if 0
+    errs() << __FILE__ << ":" << __LINE__ << ": unhandled opcode: " << TII->getName(MI.getOpcode()) << "\n";
+    report_fatal_error("unhandled opcode");
+#else
+    return false;
+#endif
+  }  
+}
+
 // Returns true if any of the instruction data operands are public.
 bool BackwardPrivacyTypeAnalysis::dataDefsPublic(const MachineInstr &MI) const {
+  if (!backpropSafeForInst(MI))
+    return false;
+
   const TargetRegisterInfo *TRI = MI.getParent()->getParent()->getSubtarget().getRegisterInfo();
   for (const MachineOperand &MO : MI.operands())
     if (MO.isReg() && MO.isDef() && MO.isPublic() && !(MO.isImplicit() && regAlwaysPublic(MO.getReg(), *TRI)))
@@ -503,6 +622,18 @@ bool BackwardPrivacyTypeAnalysis::instruction(MachineInstr &MI, PublicPhysRegs &
   // If the data defs are public, then mark the instruction public.
   if (dataDefsPublic(MI) && !MI.isCall())
     Changed |= setInstrPublic(MI);
+
+  // If an explicit output is public, then mark implicit outputs public.
+  if (!MI.isCall() && llvm::any_of(MI.operands(), [] (const MachineOperand &MO) -> bool {
+    return MO.isReg() && MO.isDef() && !MO.isImplicit() && MO.isPublic();
+  })) {
+    for (MachineOperand &MO : MI.operands()) {
+      if (MO.isReg() && MO.isDef() && MO.isImplicit() && !MO.isPublic()) {
+        MO.setIsPublic();
+        Changed = true;
+      }
+    }
+  }
 
   // Step backward.
   PubRegs.stepBackward(MI);

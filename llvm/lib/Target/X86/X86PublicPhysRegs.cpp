@@ -59,7 +59,7 @@ bool PublicPhysRegs::intersect(const PublicPhysRegs &Other) {
     if (!Other.isPublic(MyPubReg))
       RemoveRegs.push_back(MyPubReg);
   for (MCPhysReg Reg : RemoveRegs)
-    LPR.removeReg(Reg); // TODO: Call PublicPhysReg's version if we add one.
+    LPR.removeRegOnly(Reg); // TODO: Call PublicPhysReg's version if we add one.
   return !RemoveRegs.empty();
 }
 

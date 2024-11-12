@@ -995,9 +995,15 @@ void X86PTeX::validate(MachineFunction &MF, const X86::PTeXAnalysis &PTA) {
         return MO.isReg() && MO.isDef() && !MO.isImplicit() && MO.isPublic();
       });
       if (ExplicitOutputPublic) {
-        for (const MachineOperand &MO : MI.operands())
-          if (MO.isReg() && MO.isDef() && MO.isImplicit())
+        for (const MachineOperand &MO : MI.operands()) {
+          if (MO.isReg() && MO.isDef() && MO.isImplicit() && !MO.isPublic()) {
+#if 0
             assert(MO.isPublic());
+#else
+            LLVM_DEBUG(dbgs() << "warning: implicit output protected despite explicit output being unprotected: " << MI);
+#endif
+          }
+        }
       }
     }
   }

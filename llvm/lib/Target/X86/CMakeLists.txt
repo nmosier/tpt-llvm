@@ -100,7 +100,6 @@ set(sources
   X86PrivacyTypeAnalysis.cpp # PTEX-TODO: Remove.
   X86PTeXAnalysis.cpp
   X86PublicPhysRegs.cpp
-  X86ReturnHardening.cpp # PTEX-TODO: Remove.
   )
 
 add_llvm_target(X86CodeGen ${sources}

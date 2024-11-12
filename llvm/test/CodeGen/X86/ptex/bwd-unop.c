@@ -2,9 +2,7 @@
 // RUN: clang -O1 %s -mllvm --x86-ptex -mllvm --x86-ptex-type=cts    -o %t.o -c && objdump -d --no-show-raw-insn --no-addresses -Mintel %t.o | FileCheck %s
 // RUN: clang -O1 %s -mllvm --x86-ptex -mllvm --x86-ptex-type=ct     -o %t.o -c && objdump -d --no-show-raw-insn --no-addresses -Mintel %t.o | FileCheck %s
 
-#define leak(x) bar((void *) (x))
-
-extern void bar(void *);
+#include "util.h"
 
 // CHECK-LABEL: <test_not>:
 // CHECK-DAG: {{^ *}} mov rdi,rdi

@@ -44,6 +44,9 @@ public:
   void addPublicUses(const MachineInstr &MI);
 
   static bool regAlwaysPublic(Register Reg, const TargetRegisterInfo &TRI);
+
+private:
+  void removeReg(MCPhysReg Reg);
 };
 
 

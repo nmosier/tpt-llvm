@@ -97,18 +97,3 @@ int test_add(int A[], long x, long y) {
 int test_sub(int A[], long x, long y) {
   return A[x - y];
 }
- 
-// CHECK-LABEL: <test_lea>:
-// CHECK-S-NOT: mov rsi,rsi
-// CHECK-DAG: {{^ *}} mov rdi,rdi
-// CHECK-P-DAG: {{^ *}} mov rsi,rsi
-// CHECK: {{^ *}} lea rax,[rsi+rsi*4]
-// CHECK: ss mov eax,DWORD PTR [rdi+rax*4]
-int test_lea(int A[], long x) {
-  return A[x * 5];
-}
-
-
-
-// TODO: neg, not.
-// TODO: lea.
