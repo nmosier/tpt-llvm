@@ -61,7 +61,40 @@ static cl::opt<Mode> AnalysisType {
 
 namespace llvm {
 
-bool setInstrPublic(MachineInstr &MI) {
+void print(raw_ostream &os, const auto &In, const auto &Out, MachineFunction &MF) {
+  os << "===== Privacy Types for Function \"" << MF.getName() << "\" =====\n\n";
+
+  auto PrintBlockNames = [&] (const auto &range) {
+    for (auto it = range.begin(); it != range.end(); ++it) {
+      if (it != range.begin())
+        os << " ";
+      (*it)->printName(os);
+    }
+  };
+
+  for (MachineBasicBlock &MBB : MF) {
+    MBB.printName(os);
+    os << ":\n";
+    os << "    // preds: ";
+    PrintBlockNames(MBB.predecessors());
+    os << "\n";
+    os << "    // succs: ";
+    PrintBlockNames(MBB.successors());
+    os << "\n";
+    os << "    // pub-in: " << In.at(&MBB);
+    PublicPhysRegs PubRegs = In.at(&MBB);
+    for (MachineInstr &MI : MBB) {
+      os << "    // public: " << PubRegs;
+      os << "    " << MI;
+      PubRegs.stepForward(MI);
+    }
+    os << "    // public: " << PubRegs;
+    os << "    // pub-out: " << Out.at(&MBB);
+  }
+}
+
+
+bool setInstrPublic(MachineInstr &MI, StringRef reason) {
   bool Changed = false;
 
   // Mark instruction itself as public.
@@ -79,7 +112,7 @@ bool setInstrPublic(MachineInstr &MI) {
   }
 
   if (Changed)
-    LLVM_DEBUG(dbgs() << "set instr public: " << MI);
+    LLVM_DEBUG(dbgs() << reason << ": set instr public: " << MI);
 
   return Changed;
 }
@@ -88,10 +121,7 @@ namespace X86 {
 
 template <class Base>
 bool DirectionalPrivacyTypeAnalysis<Base>::setInstrPublic(MachineInstr &MI) const {
-  const bool Changed = llvm::setInstrPublic(MI);
-  if (Changed)
-    LLVM_DEBUG(dbgs() << getName() << " set instr public: " << MI);
-  return Changed;
+  return llvm::setInstrPublic(MI, getName());
 }
 
 }
@@ -291,12 +321,12 @@ void PTeXAnalysis::initGOTLoads(MachineInstr &MI) {
     return;
 
   // Yes. Such accesses always return pointers.
-  setInstrPublic(MI);
+  setInstrPublic(MI, "got-loads");
 }
 
 void PTeXAnalysis::init() {
   const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
-  
+
   // Initialize operand types.
   for (MachineBasicBlock &MBB : MF) {
     for (MachineInstr &MI : MBB) {
@@ -342,12 +372,11 @@ bool PTeXAnalysis::stack() {
 
 bool PTeXAnalysis::run() {
   init();
-
+    
   bool OverallChanged = false;
   bool IterChanged;
   do {
     IterChanged = false;
-
     IterChanged |= forward();
     IterChanged |= backward();
     if (EnableStackPrivacyAnalysis)
@@ -403,19 +432,8 @@ bool ForwardPrivacyTypeAnalysis::block(MachineBasicBlock &MBB) {
   // Meet block pub-ins. This means intersecting In[MBB] with In[PredMBB] for each predecessor PredMBB.
   // Note that this is safe to apply to all blocks, including entry blocks, because entries have no predecessors.
   // Thus, the pub-ins of entries will not change.
-  for (MachineBasicBlock *PredMBB : MBB.predecessors()) {
-    switch (AnalysisType) {
-    case CTS:
-      Changed |= In[&MBB].addRegs(Out[PredMBB]);
-      break;
-    case CT:
-    case CTDecl:
-      Changed |= In[&MBB].intersect(Out[PredMBB]);
-      break;
-    default:
-      llvm_unreachable("bad AnalysisType!");
-    }
-  }
+  for (MachineBasicBlock *PredMBB : MBB.predecessors())
+    Changed |= In[&MBB].intersect(Out[PredMBB]);
 
   // Now, transfer across the block.
   PublicPhysRegs PubRegs = In[&MBB];
@@ -478,8 +496,28 @@ bool BackwardPrivacyTypeAnalysis::block(MachineBasicBlock &MBB) {
   bool Changed = false;
 
   // Meet block pub-out with successor block pub-ins.
-  for (MachineBasicBlock *SuccMBB : MBB.successors())
-    Changed |= Out[&MBB].intersect(In[SuccMBB]);
+  switch (AnalysisType) {
+  case CT:
+  case CTDecl:
+    for (MachineBasicBlock *SuccMBB : MBB.successors())
+      Changed |= Out[&MBB].intersect(In[SuccMBB]);
+    break;
+
+  case CTS:
+    if (MBB.succ_empty())
+      break;
+    {
+      const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+      PublicPhysRegs NewOut(TRI);
+      for (MachineBasicBlock *SuccMBB : MBB.successors())
+        NewOut.addRegs(In[SuccMBB]);
+      Changed |= Out[&MBB].intersect(NewOut);
+    }
+    break;
+
+  default:
+    llvm_unreachable("Bad analysis type!");
+  }
 
   // Now, transfer across the block, *in reverse order*.
   PublicPhysRegs PubRegs = Out[&MBB];
@@ -675,35 +713,7 @@ bool DirectionalPrivacyTypeAnalysis<Base>::run() {
 }
 
 void PTeXAnalysis::print(raw_ostream &os) const {
-  os << "===== Privacy Types for Function \"" << MF.getName() << "\" =====\n\n";
-
-  auto PrintBlockNames = [&] (const auto &range) {
-    for (auto it = range.begin(); it != range.end(); ++it) {
-      if (it != range.begin())
-        os << " ";
-      (*it)->printName(os);
-    }
-  };
-
-  for (MachineBasicBlock &MBB : MF) {
-    MBB.printName(os);
-    os << ":\n";
-    os << "    // preds: ";
-    PrintBlockNames(MBB.predecessors());
-    os << "\n";
-    os << "    // succs: ";
-    PrintBlockNames(MBB.successors());
-    os << "\n";
-    os << "    // pub-in: " << In.at(&MBB);
-    PublicPhysRegs PubRegs = In.at(&MBB);
-    for (MachineInstr &MI : MBB) {
-      os << "    // public: " << PubRegs;
-      os << "    " << MI;
-      PubRegs.stepForward(MI);
-    }
-    os << "    // public: " << PubRegs;
-    os << "    // pub-out: " << Out.at(&MBB);
-  }
+  llvm::print(os, In, Out, MF);
 }
 
 bool StackPrivacyAnalysis::run() {
@@ -750,7 +760,7 @@ bool StackPrivacyAnalysis::spillSlot(int SpillSlot, ArrayRef<MachineInstr *> Sto
   // Forward Analysis: Are all stores public? If so, mark all loads public.
   if (AllStoresPublic)
     for (MachineInstr *MI : Loads)
-      Changed |= setInstrPublic(*MI);
+      Changed |= setInstrPublic(*MI, "stack");
 
   // Backward analysis is harder, since we need to be conservative.
   // It's not as simple as marking all stores public if all loads are public.

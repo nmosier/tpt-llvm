@@ -34,7 +34,7 @@ void getRegisterCover(const Container &C, SmallVectorImpl<MCPhysReg> &Out,
   getRegisterCover(C.begin(), C.end(), Out, TRI);
 }
 
-bool setInstrPublic(MachineInstr &MI);
+bool setInstrPublic(MachineInstr &MI, StringRef reason);
 
 namespace X86 {
 

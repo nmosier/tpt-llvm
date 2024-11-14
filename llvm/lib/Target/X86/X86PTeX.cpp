@@ -225,6 +225,8 @@ bool X86PTeX::instrumentPublicArguments(MachineFunction &MF, const X86::PTeXAnal
     if (IsCalleeSaved(PubReg))
       continue;
 
+    // Is this register live?
+
     // Insert dummy copy.
     LLVM_DEBUG(dbgs() << "Marking pub-in argument public: "
                << MF.getSubtarget().getRegisterInfo()->getRegAsmName(PubReg) << "\n");
@@ -973,7 +975,7 @@ static void annotateVirtualPointersInstr(MachineInstr &MI, const MachineRegister
     return;
 
   // Yes, it does. Mark instruction public.
-  setInstrPublic(MI);
+  setInstrPublic(MI, "vptr");
   LLVM_DEBUG(dbgs() << "PTeX.LLT: marking instruction public: " << MI);
 }
 
@@ -1112,7 +1114,7 @@ bool X86PTeX::declassifyBlockEntries(MachineBasicBlock &MBB, const X86::PTeXAnal
 
   // Mark newly inserted instructions public.
   for (auto MBBI2 = MBB.begin(); MBBI2 != MBBI; ++MBBI2)
-    setInstrPublic(*MBBI2);
+    setInstrPublic(*MBBI2, "decl-block");
 
   return !NewPubRegs.empty();
 }
