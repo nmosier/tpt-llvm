@@ -973,7 +973,7 @@ static void annotateVirtualPointersInstr(MachineInstr &MI, const MachineRegister
     return;
 
   // Yes, it does. Mark instruction public.
-  setInstrPublic(MI);
+  setInstrPublic(MI, __func__);
   LLVM_DEBUG(dbgs() << "PTeX.LLT: marking instruction public: " << MI);
 }
 
@@ -1112,7 +1112,7 @@ bool X86PTeX::declassifyBlockEntries(MachineBasicBlock &MBB, const X86::PTeXAnal
 
   // Mark newly inserted instructions public.
   for (auto MBBI2 = MBB.begin(); MBBI2 != MBBI; ++MBBI2)
-    setInstrPublic(*MBBI2);
+    setInstrPublic(*MBBI2, __func__);
 
   return !NewPubRegs.empty();
 }

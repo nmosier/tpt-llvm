@@ -47,6 +47,7 @@ enum Mode {
   CTS,
   CT,
   CTDecl,
+  NST,
 };
 
 static cl::opt<Mode> AnalysisType {
@@ -56,12 +57,13 @@ static cl::opt<Mode> AnalysisType {
   cl::values(
       clEnumValN(CTS, "cts", "Static constant-time protection types"),
       clEnumValN(CT, "ct", "Constant-time protection types"),
-      clEnumValN(CTDecl, "ctdecl", "Constant-time w/ declassification protection types")),
+      clEnumValN(CTDecl, "ctdecl", "Constant-time w/ declassification protection types"),
+      clEnumValN(NST, "nst", "Non-secret-transmitting code")),
 };
 
 namespace llvm {
 
-bool setInstrPublic(MachineInstr &MI) {
+bool setInstrPublic(MachineInstr &MI, StringRef reason) {
   bool Changed = false;
 
   // Mark instruction itself as public.
@@ -79,7 +81,7 @@ bool setInstrPublic(MachineInstr &MI) {
   }
 
   if (Changed)
-    LLVM_DEBUG(dbgs() << "set instr public: " << MI);
+    LLVM_DEBUG(dbgs() << reason << " set instr public: " << MI);
 
   return Changed;
 }
@@ -88,10 +90,7 @@ namespace X86 {
 
 template <class Base>
 bool DirectionalPrivacyTypeAnalysis<Base>::setInstrPublic(MachineInstr &MI) const {
-  const bool Changed = llvm::setInstrPublic(MI);
-  if (Changed)
-    LLVM_DEBUG(dbgs() << getName() << " set instr public: " << MI);
-  return Changed;
+  return llvm::setInstrPublic(MI, getName());
 }
 
 }
@@ -291,7 +290,7 @@ void PTeXAnalysis::initGOTLoads(MachineInstr &MI) {
     return;
 
   // Yes. Such accesses always return pointers.
-  setInstrPublic(MI);
+  setInstrPublic(MI, __func__);
 }
 
 void PTeXAnalysis::init() {
@@ -410,8 +409,10 @@ bool ForwardPrivacyTypeAnalysis::block(MachineBasicBlock &MBB) {
       break;
     case CT:
     case CTDecl:
+    case NST:
       Changed |= In[&MBB].intersect(Out[PredMBB]);
       break;
+      
     default:
       llvm_unreachable("bad AnalysisType!");
     }
@@ -492,32 +493,7 @@ bool BackwardPrivacyTypeAnalysis::block(MachineBasicBlock &MBB) {
   return Changed;
 }
 
-static bool backpropSafeForInst(const MachineInstr &MI) {
-  if (AnalysisType != CTDecl)
-    return true;
-
-  const TargetInstrInfo *TII = MI.getParent()->getParent()->getSubtarget().getInstrInfo();
-
-  // Special cases: MOVSX, MOVZX
-  const StringRef OpName = TII->getName(MI.getOpcode());
-  if (OpName.starts_with("MOV"))
-    return true;
-  
-  const unsigned NumProtectedUses = llvm::count_if(MI.operands(), [] (const MachineOperand &MO) -> bool {
-    return MO.isReg() && MO.isUse() && !MO.isPublic();
-  });
-
-  if (MI.mayLoad()) {
-    // If this is a memory intruction, then allow no protected inputs.
-    if (NumProtectedUses != 0)
-      return false;
-  } else {
-    // If this is a non-memory instruction, then allow exactly one
-    // protected input.
-    if (NumProtectedUses != 1)
-      return false;
-  }
-
+static bool backpropSafeForInst_CTDecl(const MachineInstr &MI) {
   switch (MI.getOpcode()) {
 #define MAKE_CASE(name) case X86::name:
 #define STD_ARITH(base, X)                      \
@@ -576,13 +552,55 @@ static bool backpropSafeForInst(const MachineInstr &MI) {
         LLVM_DEBUG(dbgs() << "backpropagation safe for instruction: " << MI);
         return true;
   default:
-#if 0
-    errs() << __FILE__ << ":" << __LINE__ << ": unhandled opcode: " << TII->getName(MI.getOpcode()) << "\n";
-    report_fatal_error("unhandled opcode");
-#else
     return false;
-#endif
-  }  
+  }
+}
+
+static bool backpropSafeForInst_NST(const MachineInstr &MI) {
+  const TargetInstrInfo *TII = MI.getParent()->getParent()->getSubtarget().getInstrInfo();
+  const bool IsCopy = TII->isFullCopyInstr(MI);
+  if (IsCopy)
+    LLVM_DEBUG(dbgs() << "NST-copy: " << MI);
+  return IsCopy;
+}
+
+static bool backpropSafeForInst(const MachineInstr &MI) {
+  const TargetInstrInfo *TII = MI.getParent()->getParent()->getSubtarget().getInstrInfo();
+
+  // Special cases: MOVSX, MOVZX
+  const StringRef OpName = TII->getName(MI.getOpcode());
+  if (OpName.starts_with("MOV"))
+    return true;
+  
+  const unsigned NumProtectedUses = llvm::count_if(MI.operands(), [] (const MachineOperand &MO) -> bool {
+    return MO.isReg() && MO.isUse() && !MO.isPublic();
+  });
+
+  if (MI.mayLoad()) {
+    // If this is a memory intruction, then allow no protected inputs.
+    if (NumProtectedUses != 0)
+      return false;
+  } else {
+    // If this is a non-memory instruction, then allow exactly one
+    // protected input.
+    if (NumProtectedUses != 1)
+      return false;
+  }
+
+  switch (AnalysisType) {
+  case CTDecl:
+    return backpropSafeForInst_CTDecl(MI);
+
+  case NST:
+    return backpropSafeForInst_NST(MI);
+
+  case CT:
+  case CTS:
+    return true;
+
+  default:
+    report_fatal_error("unhandled analysis type in backpropSafeForInst");
+  }
 }
 
 // Returns true if any of the instruction data operands are public.
@@ -750,7 +768,7 @@ bool StackPrivacyAnalysis::spillSlot(int SpillSlot, ArrayRef<MachineInstr *> Sto
   // Forward Analysis: Are all stores public? If so, mark all loads public.
   if (AllStoresPublic)
     for (MachineInstr *MI : Loads)
-      Changed |= setInstrPublic(*MI);
+      Changed |= setInstrPublic(*MI, "StackPrivacyAnalysis");
 
   // Backward analysis is harder, since we need to be conservative.
   // It's not as simple as marking all stores public if all loads are public.
