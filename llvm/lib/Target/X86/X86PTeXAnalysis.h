@@ -56,7 +56,7 @@ public:
   PTeXAnalysis(MachineFunction &MF) : MF(MF) {}
 
   bool run();
-  void print(raw_ostream &OS) const;
+  void print(raw_ostream &OS, bool Small = false) const;
   void dump() const { print(errs()); }
   const PublicPhysRegs &getIn(MachineBasicBlock *MBB) const { return In.at(MBB); }
   const PublicPhysRegs &getOut(MachineBasicBlock *MBB) const { return Out.at(MBB); }

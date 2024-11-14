@@ -218,6 +218,13 @@ bool X86PTeX::instrumentPublicArguments(MachineFunction &MF, const X86::PTeXAnal
 
   SmallVector<MCPhysReg> PubRegs;
   getRegisterCover(PTA.getIn(&MBB), PubRegs, TRI);
+
+#ifndef NDEBUG
+  LLVM_DEBUG(dbgs() << "cover:");
+  for (const MCPhysReg Reg : PubRegs)
+    LLVM_DEBUG(dbgs() << " " << TRI->getRegAsmName(Reg));
+  LLVM_DEBUG(dbgs() << "\n");
+#endif
   
   for (MCPhysReg PubReg : PubRegs) {
     // Is this a callee-saved register?
@@ -1114,7 +1121,7 @@ bool X86PTeX::declassifyBlockEntries(MachineBasicBlock &MBB, const X86::PTeXAnal
 
   // Mark newly inserted instructions public.
   for (auto MBBI2 = MBB.begin(); MBBI2 != MBBI; ++MBBI2)
-    setInstrPublic(*MBBI2, "decl-block");
+    setInstrPublic(*MBBI2, __func__);
 
   return !NewPubRegs.empty();
 }

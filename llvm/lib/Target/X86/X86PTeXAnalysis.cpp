@@ -47,6 +47,7 @@ enum Mode {
   CTS,
   CT,
   CTDecl,
+  NST,
 };
 
 static cl::opt<Mode> AnalysisType {
@@ -56,12 +57,17 @@ static cl::opt<Mode> AnalysisType {
   cl::values(
       clEnumValN(CTS, "cts", "Static constant-time protection types"),
       clEnumValN(CT, "ct", "Constant-time protection types"),
-      clEnumValN(CTDecl, "ctdecl", "Constant-time w/ declassification protection types")),
+      clEnumValN(CTDecl, "ctdecl", "Constant-time w/ declassification protection types"),
+      clEnumValN(NST, "nst", "Non-secret-transmitting code")),
 };
 
 namespace llvm {
 
-void print(raw_ostream &os, const auto &In, const auto &Out, MachineFunction &MF) {
+static bool fullDefDeclassification() {
+  return AnalysisType != NST;
+}
+
+void print(raw_ostream &os, const auto &In, const auto &Out, MachineFunction &MF, bool Small = false) {
   os << "===== Privacy Types for Function \"" << MF.getName() << "\" =====\n\n";
 
   auto PrintBlockNames = [&] (const auto &range) {
@@ -84,12 +90,15 @@ void print(raw_ostream &os, const auto &In, const auto &Out, MachineFunction &MF
     os << "    // pub-in: " << In.at(&MBB);
     PublicPhysRegs PubRegs = In.at(&MBB);
     for (MachineInstr &MI : MBB) {
-      os << "    // public: " << PubRegs;
+      if (!Small)
+        os << "    // public: " << PubRegs;
       os << "    " << MI;
       PubRegs.stepForward(MI);
     }
-    os << "    // public: " << PubRegs;
+    if (!Small)
+      os << "    // public: " << PubRegs;
     os << "    // pub-out: " << Out.at(&MBB);
+    os << "\n";
   }
 }
 
@@ -258,14 +267,28 @@ void PTeXAnalysis::initPointerCallArgs(MachineInstr &MI) {
   // Mark arguments public.
   for (const auto &Pair : ArgRegPairs) {
     const Argument *Arg = CalleeFunc->getArg(Pair.ArgNo);
-    if (Arg->getType()->isPointerTy()) {
-      MachineOperand *MO = MI.findRegisterUseOperand(Pair.Reg);
-      assert(MO && "Call doesn't use argument!");
-      assert(MO->getReg() == Pair.Reg && "Call argument register mismatch!");
-      assert(MO->isUse());
-      if (!MO->isUndef())
-        MO->setIsPublic();
+    MachineOperand *MO = MI.findRegisterUseOperand(Pair.Reg);
+
+    const auto Log = [&] (StringRef msg) {
+      LLVM_DEBUG(dbgs() << __func__ << ": " << msg << ": " << *Arg << " :: " << *MO << " :: " << MI);
+    };
+    
+    if (!Arg->getType()->isPointerTy()) {
+      Log("not marking non-pointer call argument public");
+      continue;
     }
+
+    assert(MO && "Call doesn't use argument!");
+    assert(MO->getReg() == Pair.Reg && "Call argument register mismatch!");
+    assert(MO->isUse());
+
+    if (MO->isUndef()) {
+      Log("not marking undef call argument public");
+      continue;
+    }
+
+    Log("marking pointer call argument public");
+    MO->setIsPublic();
   }
 
   // Mark pointer-typed return values public.
@@ -321,7 +344,7 @@ void PTeXAnalysis::initGOTLoads(MachineInstr &MI) {
     return;
 
   // Yes. Such accesses always return pointers.
-  setInstrPublic(MI, "got-loads");
+  setInstrPublic(MI, __func__);
 }
 
 void PTeXAnalysis::init() {
@@ -372,17 +395,30 @@ bool PTeXAnalysis::stack() {
 
 bool PTeXAnalysis::run() {
   init();
+
+  LLVM_DEBUG(dbgs() << "==== init ====\n");
+  LLVM_DEBUG(print(dbgs(), /*Small*/true));
     
   bool OverallChanged = false;
   bool IterChanged;
   do {
     IterChanged = false;
     IterChanged |= forward();
+
+    LLVM_DEBUG(dbgs() << "==== fwd ====\n");
+    LLVM_DEBUG(print(dbgs(), /*Small*/true));
+    
     IterChanged |= backward();
+
+    LLVM_DEBUG(dbgs() << "==== bwd ====\n");
+    LLVM_DEBUG(print(dbgs(), /*Small*/true));    
+    
     if (EnableStackPrivacyAnalysis)
       IterChanged |= stack();
 
     OverallChanged |= IterChanged;
+
+    LLVM_DEBUG(print(dbgs(), /*Small*/true));
   } while (IterChanged);
 
   return OverallChanged;
@@ -476,19 +512,48 @@ bool ForwardPrivacyTypeAnalysis::instruction(MachineInstr &MI, PublicPhysRegs &P
   return Changed;
 }
 
+static void getExitReachingBlocks(MachineFunction &MF, std::unordered_set<MachineBasicBlock *> &ExitReachingBlocks) {
+  auto &Set = ExitReachingBlocks;
+
+  // Initialization: add all exit blocks to set.
+  for (MachineBasicBlock &MBB : MF)
+    if (MBB.succ_empty())
+      Set.insert(&MBB);
+  
+  bool Changed;
+  do {
+    Changed = false;
+    for (MachineBasicBlock *MBB : llvm::post_order(&MF)) {
+      if (llvm::any_of(MBB->successors(), [&Set] (MachineBasicBlock *SuccMBB) -> bool {
+        return Set.count(SuccMBB);
+      }))
+        Changed |= Set.insert(MBB).second;
+    }
+  } while (Changed);
+}
+
 // TODO: Can factor out most of this code.
 void BackwardPrivacyTypeAnalysis::init() {
   const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+  const PublicPhysRegs bot(TRI);
   const PublicPhysRegs top = computeTop();
+
+  // Compute which blocks are reachable by exits using a mini data-flow pass.
+  std::unordered_set<MachineBasicBlock *> ExitReachingBlocks;
+  getExitReachingBlocks(MF, ExitReachingBlocks);
 
   for (MachineBasicBlock &MBB : MF) {
     In[&MBB] = top;
-    Out[&MBB] = top;
 
     // Conservatively initialize the pub-outs of exit blocks to the parent analysis' pub-outs.
     // We consider anything without a successor to be an exit block.
-    if (MBB.succ_empty())
+    if (MBB.succ_empty()) {
       Out[&MBB] = ParentOut[&MBB];
+    } else if (AnalysisType == CTS || !ExitReachingBlocks.count(&MBB)) {
+      Out[&MBB] = bot;
+    } else {
+      Out[&MBB] = top;
+    }
   }
 }
 
@@ -496,27 +561,12 @@ bool BackwardPrivacyTypeAnalysis::block(MachineBasicBlock &MBB) {
   bool Changed = false;
 
   // Meet block pub-out with successor block pub-ins.
-  switch (AnalysisType) {
-  case CT:
-  case CTDecl:
-    for (MachineBasicBlock *SuccMBB : MBB.successors())
+  for (MachineBasicBlock *SuccMBB : MBB.successors()) {
+    if (AnalysisType == CTS) {
+      Changed |= Out[&MBB].addRegs(In[SuccMBB]);
+    } else {
       Changed |= Out[&MBB].intersect(In[SuccMBB]);
-    break;
-
-  case CTS:
-    if (MBB.succ_empty())
-      break;
-    {
-      const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
-      PublicPhysRegs NewOut(TRI);
-      for (MachineBasicBlock *SuccMBB : MBB.successors())
-        NewOut.addRegs(In[SuccMBB]);
-      Changed |= Out[&MBB].intersect(NewOut);
     }
-    break;
-
-  default:
-    llvm_unreachable("Bad analysis type!");
   }
 
   // Now, transfer across the block, *in reverse order*.
@@ -530,12 +580,9 @@ bool BackwardPrivacyTypeAnalysis::block(MachineBasicBlock &MBB) {
   return Changed;
 }
 
-static bool backpropSafeForInst(const MachineInstr &MI) {
-  if (AnalysisType != CTDecl)
-    return true;
-
+static bool backpropSafeForInst_CTDecl(const MachineInstr &MI) {
   const TargetInstrInfo *TII = MI.getParent()->getParent()->getSubtarget().getInstrInfo();
-
+  
   // Special cases: MOVSX, MOVZX
   const StringRef OpName = TII->getName(MI.getOpcode());
   if (OpName.starts_with("MOV"))
@@ -596,7 +643,6 @@ static bool backpropSafeForInst(const MachineInstr &MI) {
         STD_UNOP_SZ(base, 32, X)                 \
         STD_UNOP_SZ(base, 64, X)
         
-    
   case X86::MOV64rm:
   case X86::MOV64rr:
   case X86::COPY:
@@ -614,13 +660,33 @@ static bool backpropSafeForInst(const MachineInstr &MI) {
         LLVM_DEBUG(dbgs() << "backpropagation safe for instruction: " << MI);
         return true;
   default:
-#if 0
-    errs() << __FILE__ << ":" << __LINE__ << ": unhandled opcode: " << TII->getName(MI.getOpcode()) << "\n";
-    report_fatal_error("unhandled opcode");
-#else
     return false;
-#endif
-  }  
+  }
+}
+
+static bool backpropSafeForInst_NST(const MachineInstr &MI) {
+  const TargetInstrInfo *TII = MI.getParent()->getParent()->getSubtarget().getInstrInfo();
+  const bool IsCopy = TII->isFullCopyInstr(MI);
+  if (IsCopy)
+    LLVM_DEBUG(dbgs() << "NST-copy: " << MI);
+  return IsCopy;
+}
+
+static bool backpropSafeForInst(const MachineInstr &MI) {
+  switch (AnalysisType) {
+  case CTDecl:
+    return backpropSafeForInst_CTDecl(MI);
+
+  case NST:
+    return backpropSafeForInst_NST(MI);
+
+  case CT:
+  case CTS:
+    return true;
+
+  default:
+    report_fatal_error("unhandled analysis type in backpropSafeForInst");
+  }
 }
 
 // Returns true if any of the instruction data operands are public.
@@ -639,7 +705,7 @@ bool BackwardPrivacyTypeAnalysis::instruction(MachineInstr &MI, PublicPhysRegs &
   bool Changed = false;
   const TargetRegisterInfo *TRI = MI.getParent()->getParent()->getSubtarget().getRegisterInfo();
 
-  if (FullDefDeclassification) {
+  if (fullDefDeclassification()) {
     for (MachineOperand &MO : MI.operands()) {
       if (MO.isReg() && MO.isDef() && !MO.isUndef() && !MO.isPublic()) {
         // Is a subregister public?
@@ -658,8 +724,11 @@ bool BackwardPrivacyTypeAnalysis::instruction(MachineInstr &MI, PublicPhysRegs &
   Changed |= syncDefs(PubRegs, MI);
 
   // If the data defs are public, then mark the instruction public.
-  if (dataDefsPublic(MI) && !MI.isCall())
+  if (dataDefsPublic(MI) && !MI.isCall()) {
     Changed |= setInstrPublic(MI);
+  } else {
+    LLVM_DEBUG(dbgs() << "fwd-instr: can't backpropate for instr: " << MI);
+  }
 
   // If an explicit output is public, then mark implicit outputs public.
   if (!MI.isCall() && llvm::any_of(MI.operands(), [] (const MachineOperand &MO) -> bool {
@@ -698,9 +767,19 @@ bool DirectionalPrivacyTypeAnalysis<Base>::run() {
   bool IterChanged;
   unsigned IterCount = 0;
   do {
+#if 0
+    LLVM_DEBUG(dbgs() << "===== " << getName() << " before " << IterCount << " =====\n");
+    LLVM_DEBUG(print(dbgs(), In, Out, MF, true));
+    LLVM_DEBUG(dbgs() << "==========\n");
+#endif
     IterChanged = false;
     for (MachineBasicBlock *MBB : base()->blocks())
       IterChanged |= block(*MBB);
+#if 0
+    LLVM_DEBUG(dbgs() << "===== " << getName() << " after " << IterCount << " =====\n");
+    LLVM_DEBUG(print(dbgs(), In, Out, MF, true));
+    LLVM_DEBUG(dbgs() << "==========\n");
+#endif
     ++IterCount;
   } while (IterChanged);
 
@@ -712,8 +791,8 @@ bool DirectionalPrivacyTypeAnalysis<Base>::run() {
   return ParentChanged;
 }
 
-void PTeXAnalysis::print(raw_ostream &os) const {
-  llvm::print(os, In, Out, MF);
+void PTeXAnalysis::print(raw_ostream &os, bool Small) const {
+  llvm::print(os, In, Out, MF, Small);
 }
 
 bool StackPrivacyAnalysis::run() {

@@ -1,4 +1,4 @@
-; RUN: llc -O1 %s --x86-ptex --x86-ptex-type=cts -o %t.o && objdump -d --no-show-raw-insn --no-addresses -Mintel %t.o | FileCheck %s
+; RUN: llc -O1 %s --x86-ptex --x86-ptex-type=cts -o %t.o -filetype=obj && objdump -d --no-show-raw-insn --no-addresses -Mintel %t.o | FileCheck %s
 
 ; CHECK-LABEL: <S_reghop4>:
 ; CHECK-NOT: mov rax,rax
