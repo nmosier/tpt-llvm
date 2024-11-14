@@ -421,6 +421,8 @@ bool PTeXAnalysis::run() {
     LLVM_DEBUG(print(dbgs(), /*Small*/true));
   } while (IterChanged);
 
+  LLVM_DEBUG(print(dbgs()));
+
   return OverallChanged;
 }
 
@@ -543,7 +545,11 @@ void BackwardPrivacyTypeAnalysis::init() {
   getExitReachingBlocks(MF, ExitReachingBlocks);
 
   for (MachineBasicBlock &MBB : MF) {
-    In[&MBB] = top;
+    if (AnalysisType == CTS) {
+      In[&MBB] = bot;
+    } else {
+      In[&MBB] = top;
+    }
 
     // Conservatively initialize the pub-outs of exit blocks to the parent analysis' pub-outs.
     // We consider anything without a successor to be an exit block.
@@ -575,7 +581,11 @@ bool BackwardPrivacyTypeAnalysis::block(MachineBasicBlock &MBB) {
     Changed |= instruction(MI, PubRegs);
 
   // Finally, update the pub-ins.
-  Changed |= In[&MBB].intersect(PubRegs);
+  if (AnalysisType == CTS) {
+    Changed |= In[&MBB].addRegs(PubRegs);
+  } else {
+    Changed |= In[&MBB].intersect(PubRegs);
+  }
 
   return Changed;
 }
@@ -767,19 +777,9 @@ bool DirectionalPrivacyTypeAnalysis<Base>::run() {
   bool IterChanged;
   unsigned IterCount = 0;
   do {
-#if 0
-    LLVM_DEBUG(dbgs() << "===== " << getName() << " before " << IterCount << " =====\n");
-    LLVM_DEBUG(print(dbgs(), In, Out, MF, true));
-    LLVM_DEBUG(dbgs() << "==========\n");
-#endif
     IterChanged = false;
     for (MachineBasicBlock *MBB : base()->blocks())
       IterChanged |= block(*MBB);
-#if 0
-    LLVM_DEBUG(dbgs() << "===== " << getName() << " after " << IterCount << " =====\n");
-    LLVM_DEBUG(print(dbgs(), In, Out, MF, true));
-    LLVM_DEBUG(dbgs() << "==========\n");
-#endif
     ++IterCount;
   } while (IterChanged);
 
