@@ -225,6 +225,23 @@ bool X86PTeX::instrumentPublicArguments(MachineFunction &MF, const X86::PTeXAnal
     LLVM_DEBUG(dbgs() << " " << TRI->getRegAsmName(Reg));
   LLVM_DEBUG(dbgs() << "\n");
 #endif
+
+  // Remove any registers from the cover that have live superregs.
+  // TODO: Share code with declassifyBlockEntries.
+  {
+    LivePhysRegs LPR(*TRI);
+    LPR.addLiveIns(MBB);
+    for (auto it = PubRegs.begin(); it != PubRegs.end(); ) {
+      const bool SuperLive = llvm::any_of(TRI->superregs(*it), [&LPR] (MCPhysReg SuperReg) -> bool {
+        return LPR.contains(SuperReg);
+      });
+      if (SuperLive) {
+        it = PubRegs.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
   
   for (MCPhysReg PubReg : PubRegs) {
     // Is this a callee-saved register?
@@ -1109,7 +1126,26 @@ bool X86PTeX::declassifyBlockEntries(MachineBasicBlock &MBB, const X86::PTeXAnal
       if (LPR.contains(*it)) {
         ++it;
       } else {
+        LLVM_DEBUG(dbgs() << __func__ << ": skipping dead public register " << TRI->getRegAsmName(*it) << "\n");
         it = NewPubRegs.erase(it);
+      }
+    }
+  }
+
+  // Erase those that have a live super-register.
+  // TODO: Combine with above.
+  {
+    LivePhysRegs LPR(*TRI);
+    LPR.addLiveIns(MBB);
+    for (auto it = NewPubRegs.begin(); it != NewPubRegs.end(); ) {
+      const bool SuperLive = llvm::any_of(TRI->superregs(*it), [&LPR] (MCPhysReg SuperReg) -> bool {
+        return LPR.contains(SuperReg);
+      });
+      if (SuperLive) {
+        LLVM_DEBUG(dbgs() << __func__ << ": skipping register " << TRI->getRegAsmName(*it) << " because super is live\n");
+        it = NewPubRegs.erase(it);
+      } else {
+        ++it;
       }
     }
   }

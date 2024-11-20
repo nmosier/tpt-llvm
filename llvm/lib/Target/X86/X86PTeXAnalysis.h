@@ -77,6 +77,7 @@ private:
   void initPointerReturnValue(MachineInstr &MI);
   void initPublicInstr(MachineInstr &MI);
   void initGOTLoads(MachineInstr &MI);
+  void initMachineMemOperands(MachineInstr &MI);
 
   bool forward();
   bool backward();

@@ -221,6 +221,27 @@ void PTeXAnalysis::initPointerLoadsOrStores(MachineInstr &MI) {
       markAllOpsPublic(MI);
 }
 
+void PTeXAnalysis::initMachineMemOperands(MachineInstr &MI) {
+  for (MachineMemOperand *MMO : MI.memoperands()) {
+    if (MMO->getType().isPointer()) {
+      // If it's pointer-typed, unprotect it.
+      markAllOpsPublic(MI);
+      LLVM_DEBUG(dbgs() << __func__ << ": marking public due to MMO pointer type: " << MI);
+    } else if (const PseudoSourceValue *Ptr = MMO->getPseudoValue()) {
+      switch (Ptr->kind()) {
+      case PseudoSourceValue::GOT:
+      case PseudoSourceValue::JumpTable:
+      case PseudoSourceValue::ConstantPool:
+      case PseudoSourceValue::GlobalValueCallEntry:
+      case PseudoSourceValue::ExternalSymbolCallEntry:
+        markAllOpsPublic(MI);
+        LLVM_DEBUG(dbgs() << __func__ << ": marking public due to PSV: " << MI);
+        break;
+      }
+    }
+  }
+}
+
 void PTeXAnalysis::initAlwaysPublicRegs(MachineInstr &MI) {
   const TargetRegisterInfo &TRI = *MI.getParent()->getParent()->getSubtarget().getRegisterInfo();
   for (MachineOperand &MO : MI.operands())
@@ -354,7 +375,7 @@ void PTeXAnalysis::init() {
   for (MachineBasicBlock &MBB : MF) {
     for (MachineInstr &MI : MBB) {
       initTransmittedUses(MI);
-      initPointerLoadsOrStores(MI);      
+      initPointerLoadsOrStores(MI);
       initAlwaysPublicRegs(MI);
       initFrameSetupAndDestroy(MI);
       initPointerCallArgs(MI);
@@ -362,6 +383,7 @@ void PTeXAnalysis::init() {
       initPointerReturnValue(MI);
       initPublicInstr(MI);
       initGOTLoads(MI);
+      initMachineMemOperands(MI);
     }
   }
 
