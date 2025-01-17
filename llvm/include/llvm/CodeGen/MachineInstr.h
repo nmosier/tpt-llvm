@@ -69,6 +69,7 @@ class MachineInstr
                                     ilist_sentinel_tracking<true>> {
 public:
   using mmo_iterator = ArrayRef<MachineMemOperand *>::iterator;
+  using Flags_t = uint32_t;
 
   /// Flags to specify different kinds of comments to output in
   /// assembly code.  These flags carry semantic information not
@@ -114,6 +115,9 @@ public:
                              // (e.g. branch folding) should skip
                              // this instruction.
     Unpredictable = 1 << 16, // Instruction with unpredictable condition.
+    TPEPrivM = 1 << 17,
+    TPEPubM = 1 << 18,
+    AnnotatePointerLoad = 1 << 19,
   };
 
 private:

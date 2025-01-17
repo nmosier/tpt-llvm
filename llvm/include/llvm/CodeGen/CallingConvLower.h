@@ -76,26 +76,29 @@ private:
   /// LocVT - The type of the location being assigned to.
   MVT LocVT;
 
-  CCValAssign(LocInfo HTP, unsigned ValNo, MVT ValVT, MVT LocVT, bool IsCustom)
-      : ValNo(ValNo), isCustom(IsCustom), HTP(HTP), ValVT(ValVT), LocVT(LocVT) {
+  /// isPointer - Is this a pointer argument?
+  bool isPointer;
+
+  CCValAssign(LocInfo HTP, unsigned ValNo, MVT ValVT, MVT LocVT, bool IsCustom, bool IsPointer)
+      : ValNo(ValNo), isCustom(IsCustom), HTP(HTP), ValVT(ValVT), LocVT(LocVT), isPointer(IsPointer) {
   }
 
 public:
   static CCValAssign getReg(unsigned ValNo, MVT ValVT, unsigned RegNo,
-                            MVT LocVT, LocInfo HTP, bool IsCustom = false) {
-    CCValAssign Ret(HTP, ValNo, ValVT, LocVT, IsCustom);
+                            MVT LocVT, LocInfo HTP, bool IsCustom, bool IsPointer) {
+    CCValAssign Ret(HTP, ValNo, ValVT, LocVT, IsCustom, IsPointer);
     Ret.Data = Register(RegNo);
     return Ret;
   }
 
   static CCValAssign getCustomReg(unsigned ValNo, MVT ValVT, unsigned RegNo,
-                                  MVT LocVT, LocInfo HTP) {
-    return getReg(ValNo, ValVT, RegNo, LocVT, HTP, /*IsCustom=*/true);
+                                  MVT LocVT, LocInfo HTP, bool IsPointer) {
+    return getReg(ValNo, ValVT, RegNo, LocVT, HTP, /*IsCustom=*/true, IsPointer);
   }
 
   static CCValAssign getMem(unsigned ValNo, MVT ValVT, int64_t Offset,
                             MVT LocVT, LocInfo HTP, bool IsCustom = false) {
-    CCValAssign Ret(HTP, ValNo, ValVT, LocVT, IsCustom);
+    CCValAssign Ret(HTP, ValNo, ValVT, LocVT, IsCustom, /*IsPointer=*/false);
     Ret.Data = Offset;
     return Ret;
   }
@@ -107,7 +110,7 @@ public:
 
   static CCValAssign getPending(unsigned ValNo, MVT ValVT, MVT LocVT,
                                 LocInfo HTP, unsigned ExtraInfo = 0) {
-    CCValAssign Ret(HTP, ValNo, ValVT, LocVT, false);
+    CCValAssign Ret(HTP, ValNo, ValVT, LocVT, /*IsCustom=*/false, /*IsPointer*/false);
     Ret.Data = ExtraInfo;
     return Ret;
   }
@@ -138,6 +141,10 @@ public:
 
   bool isUpperBitsInLoc() const {
     return HTP == AExtUpper || HTP == SExtUpper || HTP == ZExtUpper;
+  }
+
+  bool isPointerTy() const {
+    return isPointer;
   }
 };
 

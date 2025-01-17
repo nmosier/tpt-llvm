@@ -1467,3 +1467,4 @@ include "X86InstrVecCompiler.td"
 // Assembler mnemonic/instruction aliases
 include "X86InstrAsmAlias.td"
 
+include "X86InstrLLSCT.td"

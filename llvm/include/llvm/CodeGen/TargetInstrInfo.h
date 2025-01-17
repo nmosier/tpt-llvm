@@ -1044,6 +1044,16 @@ public:
     return isCopyInstrImpl(MI);
   }
 
+  bool isFullCopyInstr(const MachineInstr &MI) const {
+    auto DestSrc = isCopyInstr(MI);
+    if (!DestSrc)
+      return false;
+
+    const MachineOperand *DestRegOp = DestSrc->Destination;
+    const MachineOperand *SrcRegOp = DestSrc->Source;
+    return !DestRegOp->getSubReg() && !SrcRegOp->getSubReg();
+  }
+
   /// If the specific machine instruction is an instruction that adds an
   /// immediate value and a physical register, and stores the result in
   /// the given physical register \c Reg, return a pair of the source

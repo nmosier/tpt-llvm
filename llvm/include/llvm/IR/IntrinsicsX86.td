@@ -130,6 +130,13 @@ let TargetPrefix = "x86" in {
 }
 
 //===----------------------------------------------------------------------===//
+// LLSCT
+let TargetPrefix = "x86" in {
+  def int_x86_protect : ClangBuiltin<"__builtin_ia32_protect">,
+              DefaultAttrsIntrinsic<[llvm_any_ty], [LLVMMatchType<0>], []>;
+}
+
+//===----------------------------------------------------------------------===//
 // 3DNow!
 
 let TargetPrefix = "x86" in {

@@ -168,6 +168,13 @@ FunctionPass *createX86SpeculativeLoadHardeningPass();
 FunctionPass *createX86SpeculativeExecutionSideEffectSuppression();
 FunctionPass *createX86ArgumentStackSlotPass();
 
+FunctionPass *createX86PTeXPass(bool Instrument);
+FunctionPass *createX86AnnotatePointersPass();
+
+// PTEX-TODO: Remove.
+FunctionPass *createX86ProtectPass();
+FunctionPass *createX86ReturnHardeningPass();
+
 void initializeEvexToVexInstPassPass(PassRegistry &);
 void initializeFPSPass(PassRegistry &);
 void initializeFixupBWInstPassPass(PassRegistry &);
@@ -201,6 +208,10 @@ void initializeX86ReturnThunksPass(PassRegistry &);
 void initializeX86SpeculativeExecutionSideEffectSuppressionPass(PassRegistry &);
 void initializeX86SpeculativeLoadHardeningPassPass(PassRegistry &);
 void initializeX86TileConfigPass(PassRegistry &);
+void initializeX86PTeXPass(PassRegistry &);
+void initializeX86AnnotatePointersPass(PassRegistry &);
+// PTEX-TODO: Remove.
+void initializeX86ReturnHardeningPass(PassRegistry &);
 
 namespace X86AS {
 enum : unsigned {

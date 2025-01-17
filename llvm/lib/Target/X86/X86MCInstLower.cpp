@@ -50,6 +50,7 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizerCommon.h"
+#include "X86MCInstLowerPTeX.h"
 #include <string>
 
 using namespace llvm;
@@ -515,6 +516,9 @@ void X86MCInstLower::Lower(const MachineInstr *MI, MCInst &OutMI) const {
   default:
     break;
   }
+
+  // PTeX: Propagate MI->MC flags.
+  X86::X86MCInstLowerTPE(MI, OutMI);
 }
 
 void X86AsmPrinter::LowerTlsAddr(X86MCInstLower &MCInstLowering,

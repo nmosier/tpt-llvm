@@ -182,7 +182,7 @@ void CallingConvEmitter::EmitAction(Record *Action,
           << Counter << ")) {\n";
       }
       O << IndentStr << "  State.addLoc(CCValAssign::getReg(ValNo, ValVT, "
-        << "Reg, LocVT, LocInfo));\n";
+        << "Reg, LocVT, LocInfo, /*IsCustom=*/false, ArgFlags.isPointer()));\n";
       if (Action->isSubClassOf("CCAssignToRegAndStack")) {
         int Size = Action->getValueAsInt("Size");
         int Align = Action->getValueAsInt("Align");
@@ -244,7 +244,7 @@ void CallingConvEmitter::EmitAction(Record *Action,
           << ")) {\n";
       }
       O << IndentStr << "  State.addLoc(CCValAssign::getReg(ValNo, ValVT, "
-        << "Reg, LocVT, LocInfo));\n";
+        << "Reg, LocVT, LocInfo, /*IsCustom=*/false, ArgFlags.isPointer()));\n";
       O << IndentStr << "  return false;\n";
       O << IndentStr << "}\n";
     } else if (Action->isSubClassOf("CCAssignToStack")) {

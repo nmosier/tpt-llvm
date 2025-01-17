@@ -22,6 +22,11 @@ tablegen(LLVM X86GenFoldTables.inc -gen-x86-fold-tables -asmwriternum=1)
 
 add_public_tablegen_target(X86CommonTableGen)
 
+set(LLVM_X86_DEBUG OFF CACHE BOOL "Build X86 backend in debug mode")
+if (LLVM_X86_DEBUG)
+  add_compile_options(-g -O0)
+endif()
+
 set(sources
   X86ArgumentStackSlotRebase.cpp
   X86AsmPrinter.cpp
@@ -68,6 +73,7 @@ set(sources
   X86LoadValueInjectionLoadHardening.cpp
   X86LoadValueInjectionRetHardening.cpp
   X86MCInstLower.cpp
+  X86MCInstLowerPTeX.cpp
   X86MachineFunctionInfo.cpp
   X86MacroFusion.cpp
   X86OptimizeLEAs.cpp
@@ -87,6 +93,20 @@ set(sources
   X86VZeroUpper.cpp
   X86WinEHState.cpp
   X86InsertWait.cpp
+  PTeX/PTeX.cpp
+  PTeX/Sink.cpp
+  PTeX/Hoist.cpp
+  PTeX/Flags.cpp
+  PTeX/PTeXAnalysis.cpp
+  PTeX/PublicPhysRegs.cpp
+  PTeX/ForwardAnalysis.cpp
+  PTeX/BackwardAnalysis.cpp
+  PTeX/BranchAnalysis.cpp
+  PTeX/Util.cpp
+  PTeX/PTeXInfo.cpp
+  PTeX/Reload.cpp
+  X86AnnotatePublic.cpp
+  X86LLSCTUtil.cpp # PTEX-TODO: Consolidate.
   )
 
 add_llvm_target(X86CodeGen ${sources}

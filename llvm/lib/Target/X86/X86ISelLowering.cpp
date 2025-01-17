@@ -4293,6 +4293,10 @@ SDValue X86TargetLowering::LowerFormalArguments(
           llvm_unreachable("Unknown argument type!");
 
         Register Reg = MF.addLiveIn(VA.getLocReg(), RC);
+        // PTEX-HACK: Should programatically compute the pointer size.
+        // PTEX-HACK: Maybe we need to remember the pointer address space?
+        if (VA.isPointerTy())
+          MF.getRegInfo().setType(Reg, LLT::pointer(0, 64));
         ArgValue = DAG.getCopyFromReg(Chain, dl, Reg, RegVT);
       }
 
@@ -4430,6 +4434,20 @@ SDValue X86TargetLowering::LowerFormalArguments(
       MRI.disableCalleeSavedRegister(Pair.first);
   }
 
+#if 0
+  for (const CCValAssign& VA : ArgLocs) {
+    if (VA.isRegLoc()) {
+      const Register Reg = VA.getLocReg();
+      assert(Reg.isPhysical());
+      errs() << "lowered " << MF.getSubtarget().getRegisterInfo()->getRegAsmName(Reg.asMCReg()) << "    ";
+      errs() << *MF.getFunction().getArg(VA.getValNo()) << "\n";
+    }
+  }
+#endif
+
+  assert(MF.FormalArgLocs.empty());
+  llvm::copy(ArgLocs, std::back_inserter(MF.FormalArgLocs));
+
   return Chain;
 }
 
@@ -4532,7 +4550,7 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   const Module *M = MF.getMMI().getModule();
   Metadata *IsCFProtectionSupported = M->getModuleFlag("cf-protection-branch");
 
-  MachineFunction::CallSiteInfo CSInfo;
+  MachineFunction::CallSiteInfo CSInfo(CB);
   if (CallConv == CallingConv::X86_INTR)
     report_fatal_error("X86 interrupts may not be called directly");
 
@@ -4739,7 +4757,7 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
       RegsToPass.push_back(std::make_pair(VA.getLocReg(), Arg));
       const TargetOptions &Options = DAG.getTarget().Options;
       if (Options.EmitCallSiteInfo)
-        CSInfo.emplace_back(VA.getLocReg(), I);
+        CSInfo.ArgRegPairs.emplace_back(VA.getLocReg(), I);
       if (isVarArg && IsWin64) {
         // Win64 ABI requires argument XMM reg to be copied to the corresponding
         // shadow reg if callee is a varargs function.
@@ -4978,6 +4996,13 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
     if (isFuncletEHPersonality(Pers))
       Mask = RegInfo->getNoPreservedMask();
   }
+
+#if 0
+  // LLSCT/TPE: EXPERIMENTAL
+  if (llsct::NoCalleeSavedRegs()) {
+    Mask = RegInfo->getNoPreservedMask();
+  }
+#endif
 
   // Define a new register mask from the existing mask.
   uint32_t *RegMask = nullptr;
@@ -36159,6 +36184,7 @@ const char *X86TargetLowering::getTargetNodeName(unsigned Opcode) const {
   NODE_NAME_CASE(TESTUI)
   NODE_NAME_CASE(FP80_ADD)
   NODE_NAME_CASE(STRICT_FP80_ADD)
+  NODE_NAME_CASE(PROTECT)
   }
   return nullptr;
 #undef NODE_NAME_CASE

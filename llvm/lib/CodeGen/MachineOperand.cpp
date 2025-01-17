@@ -258,7 +258,7 @@ void MachineOperand::ChangeToDbgInstrRef(unsigned InstrIdx, unsigned OpIdx,
 /// the setReg method should be used.
 void MachineOperand::ChangeToRegister(Register Reg, bool isDef, bool isImp,
                                       bool isKill, bool isDead, bool isUndef,
-                                      bool isDebug) {
+                                      bool isDebug, bool isPublic) {
   MachineRegisterInfo *RegInfo = nullptr;
   if (MachineFunction *MF = getMFIfAvailable(*this))
     RegInfo = &MF->getRegInfo();
@@ -276,6 +276,8 @@ void MachineOperand::ChangeToRegister(Register Reg, bool isDef, bool isImp,
   // Change this to a register and set the reg#.
   assert(!(isDead && !isDef) && "Dead flag on non-def");
   assert(!(isKill && isDef) && "Kill flag on def");
+  assert(!(isUndef && isPublic) && "Public flag on undef");
+  assert(!(isDebug && isPublic) && "Public flag on debug");
   OpKind = MO_Register;
   SmallContents.RegNo = Reg;
   SubReg_TargetFlags = 0;
@@ -287,6 +289,7 @@ void MachineOperand::ChangeToRegister(Register Reg, bool isDef, bool isImp,
   IsInternalRead = false;
   IsEarlyClobber = false;
   IsDebug = isDebug;
+  IsPublic = isPublic;
   // Ensure isOnRegUseList() returns false.
   Contents.Reg.Prev = nullptr;
   // Preserve the tie when the operand was already a register.
@@ -806,6 +809,8 @@ void MachineOperand::print(raw_ostream &OS, ModuleSlotTracker &MST,
       OS << "early-clobber ";
     if (getReg().isPhysical() && isRenamable())
       OS << "renamable ";
+    if (isPublic() && getReg().isValid())
+      OS << "public ";
     // isDebug() is exactly true for register operands of a DBG_VALUE. So we
     // simply infer it when parsing and do not need to print it.
 

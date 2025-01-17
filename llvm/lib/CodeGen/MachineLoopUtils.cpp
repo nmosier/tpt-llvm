@@ -130,5 +130,9 @@ MachineBasicBlock *llvm::PeelSingleBlockLoop(LoopPeelDirection Direction,
       TII->insertBranch(*NewBB, Exit, nullptr, {}, DL);
   }
 
+  if (MRI.tracksLiveness())
+    for (const auto &LiveIn : Loop->liveins())
+      NewBB->addLiveIn(LiveIn);
+
   return NewBB;
 }

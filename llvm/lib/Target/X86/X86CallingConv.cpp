@@ -57,7 +57,7 @@ static bool CC_X86_32_RegCall_Assign2Regs(unsigned &ValNo, MVT &ValVT,
     assert(Reg && "Expecting a register will be available");
 
     // Assign the value to the allocated register
-    State.addLoc(CCValAssign::getCustomReg(ValNo, ValVT, Reg, LocVT, LocInfo));
+    State.addLoc(CCValAssign::getCustomReg(ValNo, ValVT, Reg, LocVT, LocInfo, ArgFlags.isPointer()));
   }
 
   // Successful in allocating registers - stop scanning next rules.
@@ -104,12 +104,14 @@ static bool CC_X86_VectorCallAssignRegister(unsigned &ValNo, MVT &ValVT,
       unsigned AssigedReg = State.AllocateReg(Reg);
       assert(AssigedReg == Reg && "Expecting a valid register allocation");
       State.addLoc(
-          CCValAssign::getReg(ValNo, ValVT, AssigedReg, LocVT, LocInfo));
+          CCValAssign::getReg(ValNo, ValVT, AssigedReg, LocVT, LocInfo,
+                              /*IsCustom=*/false, ArgFlags.isPointer()));
       return true;
     }
     // If the register is marked as shadow allocated - assign to it.
     if (Is64bit && State.IsShadowAllocatedReg(Reg)) {
-      State.addLoc(CCValAssign::getReg(ValNo, ValVT, Reg, LocVT, LocInfo));
+      State.addLoc(CCValAssign::getReg(ValNo, ValVT, Reg, LocVT, LocInfo,
+                                       /*IsCustom*/false, ArgFlags.isPointer()));
       return true;
     }
   }
@@ -169,7 +171,8 @@ static bool CC_X86_64_VectorCall(unsigned &ValNo, MVT &ValVT, MVT &LocVT,
         State.AllocateStack(8, Align(8));
 
       if (!ArgFlags.isHva()) {
-        State.addLoc(CCValAssign::getReg(ValNo, ValVT, Reg, LocVT, LocInfo));
+        State.addLoc(CCValAssign::getReg(ValNo, ValVT, Reg, LocVT, LocInfo,
+                                         /*IsCustom=*/false, ArgFlags.isPointer()));
         return true; // Allocated a register - Stop the search.
       }
     }
@@ -209,7 +212,8 @@ static bool CC_X86_32_VectorCall(unsigned &ValNo, MVT &ValVT, MVT &LocVT,
 
   // Assign XMM register.
   if (unsigned Reg = State.AllocateReg(CC_X86_VectorCallGetSSEs(ValVT))) {
-    State.addLoc(CCValAssign::getReg(ValNo, ValVT, Reg, LocVT, LocInfo));
+    State.addLoc(CCValAssign::getReg(ValNo, ValVT, Reg, LocVT, LocInfo,
+                                     /*IsCustom=*/false, ArgFlags.isPointer()));
     return true;
   }
 
@@ -259,7 +263,8 @@ static bool CC_X86_32_MCUInReg(unsigned &ValNo, MVT &ValVT, MVT &LocVT,
   // so do the usual inreg stuff.
   if (PendingMembers.empty()) {
     if (unsigned Reg = State.AllocateReg(RegList)) {
-      State.addLoc(CCValAssign::getReg(ValNo, ValVT, Reg, LocVT, LocInfo));
+      State.addLoc(CCValAssign::getReg(ValNo, ValVT, Reg, LocVT, LocInfo,
+                                       /*IsCustom*/false, ArgFlags.isPointer()));
       return true;
     }
     return false;

@@ -94,6 +94,10 @@ public:
       LiveRegs.erase(*R);
   }
 
+  void removeRegOnly(MCPhysReg Reg) {
+    LiveRegs.erase(Reg);
+  }
+
   /// Removes physical registers clobbered by the regmask operand \p MO.
   void removeRegsInMask(const MachineOperand &MO,
         SmallVectorImpl<std::pair<MCPhysReg, const MachineOperand*>> *Clobbers =

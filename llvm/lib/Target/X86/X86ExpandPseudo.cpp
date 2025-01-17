@@ -638,7 +638,7 @@ void X86ExpandPseudo::ExpandVastartSaveXmmRegs(
   LivePhysRegs LiveRegs(*STI->getRegisterInfo());
   SmallVector<std::pair<MCPhysReg, const MachineOperand *>, 8> Clobbers;
 
-  LiveRegs.addLiveIns(*EntryBlk);
+  LiveRegs.addLiveInsNoPristines(*EntryBlk);
   for (MachineInstr &MI : EntryBlk->instrs()) {
     if (MI.getOpcode() == VAStartPseudoInstr->getOpcode())
       break;

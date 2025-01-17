@@ -151,6 +151,9 @@ private:
   /// not a real instruction.  Such uses should be ignored during codegen.
   unsigned IsDebug : 1;
 
+  /// [PTeX] Is the operand public?
+  unsigned IsPublic : 1;
+
   /// SmallContents - This really should be part of the Contents union, but
   /// lives out here so we can get a better packed struct.
   /// MO_Register: Register number.
@@ -211,11 +214,6 @@ private:
                   "MachineOperand shouldn't be more than 8 byte aligned");
     static_assert(sizeof(Contents) <= 2 * sizeof(void *),
                   "Contents should be at most two pointers");
-    static_assert(sizeof(MachineOperand) <=
-                      alignTo<alignof(int64_t)>(2 * sizeof(unsigned) +
-                                                3 * sizeof(void *)),
-                  "MachineOperand too big. Should be Kind, SmallContents, "
-                  "ParentMI, and Contents");
   }
 
 public:
@@ -457,6 +455,11 @@ public:
     return IsDebug;
   }
 
+  bool isPublic() const {
+    assert(isReg() && "Wrong MachineOpernad accessor");
+    return IsPublic || !getReg().isValid();
+  }
+
   /// readsReg - Returns true if this operand reads the previous value of its
   /// register.  A use operand with the <undef> flag set doesn't read its
   /// register.  A sub-register def implicitly reads the other parts of the
@@ -529,6 +532,7 @@ public:
 
   void setIsUndef(bool Val = true) {
     assert(isReg() && "Wrong MachineOperand mutator");
+    setIsPublic(false);
     IsUndef = Val;
   }
 
@@ -546,7 +550,14 @@ public:
 
   void setIsDebug(bool Val = true) {
     assert(isReg() && !IsDef && "Wrong MachineOperand mutator");
+    setIsPublic(false);
     IsDebug = Val;
+  }
+
+  void setIsPublic(bool Val = true) {
+    assert(isReg() && "Wrong MachineOperand mutator");
+    assert(!(Val && isUndef()) && "Can't mark undef operand public");
+    IsPublic = Val;
   }
 
   //===--------------------------------------------------------------------===//
@@ -801,7 +812,8 @@ public:
   /// the setReg method should be used.
   void ChangeToRegister(Register Reg, bool isDef, bool isImp = false,
                         bool isKill = false, bool isDead = false,
-                        bool isUndef = false, bool isDebug = false);
+                        bool isUndef = false, bool isDebug = false,
+                        bool isPublic = false);
 
   /// getTargetIndexName - If this MachineOperand is a TargetIndex that has a
   /// name, attempt to get the name. Returns nullptr if the TargetIndex does not
@@ -836,9 +848,11 @@ public:
                                   bool isEarlyClobber = false,
                                   unsigned SubReg = 0, bool isDebug = false,
                                   bool isInternalRead = false,
-                                  bool isRenamable = false) {
+                                  bool isRenamable = false, bool isPublic = false) {
     assert(!(isDead && !isDef) && "Dead flag on non-def");
     assert(!(isKill && isDef) && "Kill flag on def");
+    assert(!(isUndef && isPublic) && "Public flag on undef");
+    assert(!(isDebug && isPublic) && "Public flag on debug");
     MachineOperand Op(MachineOperand::MO_Register);
     Op.IsDef = isDef;
     Op.IsImp = isImp;
@@ -849,6 +863,7 @@ public:
     Op.IsEarlyClobber = isEarlyClobber;
     Op.TiedTo = 0;
     Op.IsDebug = isDebug;
+    Op.IsPublic = isPublic;
     Op.SmallContents.RegNo = Reg;
     Op.Contents.Reg.Prev = nullptr;
     Op.Contents.Reg.Next = nullptr;

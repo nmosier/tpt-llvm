@@ -3279,13 +3279,17 @@ bool X86InstrInfo::analyzeBranchPredicate(MachineBasicBlock &MBB,
                                           bool AllowModify) const {
   using namespace std::placeholders;
 
-  SmallVector<MachineOperand, 4> Cond;
+  SmallVector<MachineOperand, 4> Conds;
   SmallVector<MachineInstr *, 4> CondBranches;
-  if (AnalyzeBranchImpl(MBB, MBP.TrueDest, MBP.FalseDest, Cond, CondBranches,
+  if (AnalyzeBranchImpl(MBB, MBP.TrueDest, MBP.FalseDest, Conds, CondBranches,
                         AllowModify))
     return true;
 
-  if (Cond.size() != 1)
+  if (Conds.size() != 1)
+    return true;
+
+  const MachineOperand Cond = Conds[0];
+  if (!(Cond.getImm() == X86::COND_NE || Cond.getImm() == X86::COND_E))
     return true;
 
   assert(MBP.TrueDest && "expected!");
@@ -3325,16 +3329,41 @@ bool X86InstrInfo::analyzeBranchPredicate(MachineBasicBlock &MBB,
   //   test %reg, %reg
   //   je %label
   //
-  const unsigned TestOpcode =
-      Subtarget.is64Bit() ? X86::TEST64rr : X86::TEST32rr;
-
-  if (ConditionDef->getOpcode() == TestOpcode &&
+  static const std::array<int, 4> TestOpcodes = {X86::TEST64rr, X86::TEST32rr, X86::TEST16rr, X86::TEST8rr};
+  if (llvm::is_contained(TestOpcodes, ConditionDef->getOpcode()) &&
       ConditionDef->getNumOperands() == 3 &&
-      ConditionDef->getOperand(0).isIdenticalTo(ConditionDef->getOperand(1)) &&
-      (Cond[0].getImm() == X86::COND_NE || Cond[0].getImm() == X86::COND_E)) {
+      ConditionDef->getOperand(0).isIdenticalTo(ConditionDef->getOperand(1))) {
     MBP.LHS = ConditionDef->getOperand(0);
     MBP.RHS = MachineOperand::CreateImm(0);
-    MBP.Predicate = Cond[0].getImm() == X86::COND_NE
+    MBP.Predicate = Cond.getImm() == X86::COND_NE
+                        ? MachineBranchPredicate::PRED_NE
+                        : MachineBranchPredicate::PRED_EQ;
+    return false;
+  }
+
+  // Check for:
+  //   cmp %rA, %rB
+  //   je/jnz %label
+  static const std::array<int, 4> CmpOpcodes = {X86::CMP64rr, X86::CMP32rr, X86::CMP16rr, X86::CMP8rr};
+  if (llvm::is_contained(CmpOpcodes, ConditionDef->getOpcode()) &&
+      ConditionDef->getNumOperands() == 3) {
+    MBP.LHS = ConditionDef->getOperand(0);
+    MBP.RHS = ConditionDef->getOperand(1);
+    MBP.Predicate = Cond.getImm() == X86::COND_NE
+                        ? MachineBranchPredicate::PRED_NE
+                        : MachineBranchPredicate::PRED_EQ;
+    return false;
+  }
+
+  // Check for:
+  //   dec %reg
+  //   jz/jnz %label
+  static const std::array<int, 4> DecOpcodes = {X86::DEC64r, X86::DEC32r, X86::DEC16r, X86::DEC8r};
+  if (llvm::is_contained(DecOpcodes, ConditionDef->getOpcode()) &&
+      ConditionDef->getNumOperands() == 3) {
+    MBP.LHS = ConditionDef->getOperand(0);
+    MBP.RHS = MachineOperand::CreateImm(0);
+    MBP.Predicate = Cond.getImm() == X86::COND_NE
                         ? MachineBranchPredicate::PRED_NE
                         : MachineBranchPredicate::PRED_EQ;
     return false;

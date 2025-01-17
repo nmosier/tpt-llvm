@@ -1287,6 +1287,14 @@ PrefixKind X86MCCodeEmitter::emitOpcodePrefix(int MemOperand, const MCInst &MI,
   const MCInstrDesc &Desc = MCII.get(MI.getOpcode());
   uint64_t TSFlags = Desc.TSFlags;
 
+  if (MI.getFlags() & X86::IP_TPE_PRIVM) {
+    emitByte(0x36, CB);
+  }
+
+  if (MI.getFlags() & X86::IP_USE_DS) {
+    emitByte(0x3E, CB);
+  }
+
   // Emit the operand size opcode prefix as needed.
   if ((TSFlags & X86II::OpSizeMask) ==
       (STI.hasFeature(X86::Is16Bit) ? X86II::OpSize32 : X86II::OpSize16))

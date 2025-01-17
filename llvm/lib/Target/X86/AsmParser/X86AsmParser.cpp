@@ -3341,7 +3341,7 @@ bool X86AsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
 
   auto isLockRepeatNtPrefix = [](StringRef N) {
     return StringSwitch<bool>(N)
-        .Cases("lock", "rep", "repe", "repz", "repne", "repnz", "notrack", true)
+        .Cases("lock", "rep", "repe", "repz", "repne", "repnz", "notrack", "nospec", true)
         .Default(false);
   };
 

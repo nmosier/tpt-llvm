@@ -1140,35 +1140,6 @@ template <typename T> struct CalculateSmallVectorDefaultInlinedElements {
   // it contradicts 1.
   static constexpr size_t kPreferredSmallVectorSizeof = 64;
 
-  // static_assert that sizeof(T) is not "too big".
-  //
-  // Because our policy guarantees at least one inlined element, it is possible
-  // for an arbitrarily large inlined element to allocate an arbitrarily large
-  // amount of inline storage. We generally consider it an antipattern for a
-  // SmallVector to allocate an excessive amount of inline storage, so we want
-  // to call attention to these cases and make sure that users are making an
-  // intentional decision if they request a lot of inline storage.
-  //
-  // We want this assertion to trigger in pathological cases, but otherwise
-  // not be too easy to hit. To accomplish that, the cutoff is actually somewhat
-  // larger than kPreferredSmallVectorSizeof (otherwise,
-  // `SmallVector<SmallVector<T>>` would be one easy way to trip it, and that
-  // pattern seems useful in practice).
-  //
-  // One wrinkle is that this assertion is in theory non-portable, since
-  // sizeof(T) is in general platform-dependent. However, we don't expect this
-  // to be much of an issue, because most LLVM development happens on 64-bit
-  // hosts, and therefore sizeof(T) is expected to *decrease* when compiled for
-  // 32-bit hosts, dodging the issue. The reverse situation, where development
-  // happens on a 32-bit host and then fails due to sizeof(T) *increasing* on a
-  // 64-bit host, is expected to be very rare.
-  static_assert(
-      sizeof(T) <= 256,
-      "You are trying to use a default number of inlined elements for "
-      "`SmallVector<T>` but `sizeof(T)` is really big! Please use an "
-      "explicit number of inlined elements with `SmallVector<T, N>` to make "
-      "sure you really want that much inline storage.");
-
   // Discount the size of the header itself when calculating the maximum inline
   // bytes.
   static constexpr size_t PreferredInlineBytes =
