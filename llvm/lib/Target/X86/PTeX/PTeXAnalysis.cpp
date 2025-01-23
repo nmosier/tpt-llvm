@@ -308,18 +308,25 @@ void PTeXAnalysis::markAllOpsPublic(MachineInstr &MI) {
     markOpPublic(MO);
 }
 
+// TODO: Re-examine this.
 bool PTeXAnalysis::fixup() {
   bool Changed = false;
   for (MachineBasicBlock &MBB : MF) {
     for (MachineInstr &MI : MBB) {
-      // HACK: If an explicit output is marked public, then mark the implicit output public, too.
-      if (llvm::all_of(MI.operands(), [] (const MachineOperand &MO) -> bool {
-        if (MO.isReg() && MO.isDef() && !MO.isImplicit() && !MO.isUndef())
-          return MO.isPublic();
-        return true;
-      })) {
+      if (MI.isCall())
+        continue;
+
+      // HACK: If there are some explicit outputs and all of them are marked public, then mark the implicit output public, too.
+      const auto IsExplicitDef = [] (const MachineOperand &MO) -> bool {
+        return MO.isReg() && MO.isDef() && !MO.isImplicit() && !MO.isUndef();
+      };
+      if (llvm::any_of(MI.operands(), IsExplicitDef) &&
+          llvm::all_of(MI.operands(), [&] (const MachineOperand &MO) -> bool {
+            // IsImplicitDef => MO.isPublic()
+            return !IsExplicitDef(MO) || MO.isPublic();
+          })) {
         for (MachineOperand &MO : MI.operands()) {
-          if (MO.isReg() && MO.isDef() && MO.isImplicit() && !MO.isUndef() && !MO.isPublic()) {
+          if (MO.isReg() && MO.isDef() && MO.isImplicit() && !MO.isUndef() && !MO.isPublic() && MO.getReg() == X86::EFLAGS) {
             LLVM_DEBUG(dbgs() << "HACK: marking implicit output " << MO << " public: " << MI);
             MO.setIsPublic();
             Changed = true;
