@@ -438,10 +438,12 @@ int PrivateSpillInfo::getOrAllocateSpillSlot(Register Reg, MachineFunction &MF) 
 }
 
 void X86PTeX::computePrivateCSRsToSpill(const MachineInstr &MI, const PublicPhysRegs &PubRegs,
-                                         SmallVectorImpl<MCPhysReg> &ToSpill) {
+                                        SmallVectorImpl<MCPhysReg> &ToSpill) {
   assert(MI.isCall());
 
-  const MachineFunction &MF = *MI.getParent()->getParent();
+  const MachineBasicBlock &MBB = *MI.getParent();
+  const MachineFunction &MF = *MBB.getParent();
+  const MachineRegisterInfo &MRI = MF.getRegInfo();
   const auto *TRI = MF.getSubtarget<X86Subtarget>().getRegisterInfo();
 
   // Private registers that require spilling are those that meet the following criteria:
@@ -499,7 +501,29 @@ void X86PTeX::computePrivateCSRsToSpill(const MachineInstr &MI, const PublicPhys
   // Finally, compute the maximal cover.
   getRegisterCover(PrivateCSRs, ToSpill, TRI);
 
-  // If we have any weird upper-half registers in there, just throw them out.
+  // TODO: If any of the registers in the cover are dead, then just zero 'em out?
+  // Compute live registers at entry to call.
+  LivePhysRegs LPR(*TRI);
+  LPR.addLiveOuts(MBB);
+  for (const MachineInstr &PostMI : llvm::reverse(MBB)) {
+    LPR.stepBackward(PostMI);
+    if (&PostMI == &MI)
+      break;
+  }
+  for (auto it = ToSpill.begin(); it != ToSpill.end(); ) {
+    if (LPR.available(MRI, *it)) {
+      // The register is dead!
+      LLVM_DEBUG(dbgs() << "FIXME: need to zero out dead registers!\n");
+      LLVM_DEBUG(dbgs() << "private CSR is dead: " << TRI->getRegAsmName(*it) << "\n");
+      it = ToSpill.erase(it);
+    } else if (LPR.contains(*it)) {
+      LLVM_DEBUG(dbgs() << "private CSR is fully live: " << TRI->getRegAsmName(*it) << "\n");
+      ++it;
+    } else {
+      LLVM_DEBUG(dbgs() << "private CSR is partially live: " << TRI->getRegAsmName(*it) << "\n");
+      ++it;
+    }
+  }
 
 
 #if 0
@@ -596,6 +620,7 @@ MCPhysReg X86PTeX::spillPrivateCSR(MCPhysReg SpillReg, MachineInstr &MI, Func Ge
   return getX86SubSuperRegister(SpillReg, 64);
 }
 
+// TODO: Split out into separate file, as it's a seperate pass.
 template <typename Func>
 bool X86PTeX::eliminatePrivateCSRsForCall(MachineInstr &MI, PublicPhysRegs &PubRegs, Func GetSpillInfo) {
   assert(MI.isCall());
