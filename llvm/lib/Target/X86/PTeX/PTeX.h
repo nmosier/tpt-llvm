@@ -12,6 +12,7 @@ namespace llvm::X86 {
 bool EnablePTeX();
 extern cl::opt<bool> PrefixProtectedStores;
 extern cl::opt<bool> UnprotectAllPointers;
+extern cl::opt<bool> SplitCriticalEdges;
 
 enum PTeXMode {
   NSA,

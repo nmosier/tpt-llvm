@@ -61,12 +61,11 @@ bool BranchAnalysis::analyzeBlock(MachineBasicBlock &MBB) {
   }
 
   assert(DstMBB);
-
   if (DstMBB->pred_size() > 1) {
     // We have a critical edge that is impeding our analysis.
-    // Inform the parent analysis of this problem.
+    // If critical edge splitting is enabled, we should never get here.
+    assert(!X86::SplitCriticalEdges);
     assert(MBB.succ_size() > 1);
-    PTI.RequestedCriticalEdgeSplits.emplace(&MBB, DstMBB);
     LLVM_DEBUG(dbgs() << "ptex-analysis-branch: fail: unprotected destination block ";
                DstMBB->printName(dbgs());
                dbgs() << " for " << *ProtMO << " has " << DstMBB->pred_size() << " successors\n");

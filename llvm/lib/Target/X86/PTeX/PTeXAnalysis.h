@@ -21,8 +21,6 @@ inline bool regAlwaysPublic(Register Reg, const TargetRegisterInfo &TRI) {
 
 class PTeXAnalysis : public PTeXInfo {
 public:
-  std::set<std::pair<MachineBasicBlock *, MachineBasicBlock *>> RequestedCriticalEdgeSplits;
-
   PTeXAnalysis(MachineFunction &MF): PTeXInfo(MF) {}
 
   void run();

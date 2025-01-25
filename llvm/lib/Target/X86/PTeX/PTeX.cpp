@@ -113,7 +113,7 @@ static cl::opt<bool> UnprotectFlags {
   cl::Hidden,
 };
 
-static cl::opt<bool> SplitCriticalEdges {
+cl::opt<bool> SplitCriticalEdges {
   PASS_KEY "-split",
   cl::desc("[PTeX] Split critical edges"),
   cl::init(false),
@@ -211,18 +211,6 @@ bool X86PTeX::runOnMachineFunction(MachineFunction& MF) {
   // Run protection analysis.
   PTA.emplace(MF);
   PTA->run();
-
-  // Split any requested critical edges.
-  // TODO: Remove.
-  bool Split = false;
-  for (const auto &[SrcMBB, DstMBB] : PTA->RequestedCriticalEdgeSplits) {
-    if (SrcMBB->SplitCriticalEdge(DstMBB, *this)) {
-      Split = true;
-      break;
-    }
-  }
-  if (Split)
-    goto restart_analysis;
 
   // Check if we need to unpeel loops.
   // Condition: we have a loop whose header for which for some register R:
