@@ -1,5 +1,5 @@
-; RUN: llc %s --x86-ptex=nst --filetype=obj -o %t.o; objdump -d -Mintel --no-show-raw-insn --no-addresses %t.o | FileCheck --check-prefixes=ALL,NST %s
-; RUN: llc %s --x86-ptex=ct  --filetype=obj -o %t.o; objdump -d -Mintel --no-show-raw-insn --no-addresses %t.o | FileCheck --check-prefixes=ALL,CT  %s
+; RUN: llc %s --x86-ptex=sni --filetype=obj -o %t.o; objdump -d -Mintel --no-show-raw-insn --no-addresses %t.o | FileCheck --check-prefixes=ALL,NST %s
+; RUN: llc %s --x86-ptex=sct --filetype=obj -o %t.o; objdump -d -Mintel --no-show-raw-insn --no-addresses %t.o | FileCheck --check-prefixes=ALL,CT  %s
 
 ; ALL-LABEL: <foo>:
 ; NST-NOT: {{^ *}} inc

@@ -13,9 +13,9 @@ bool EnablePTeX();
 extern cl::opt<bool> PrefixProtectedStores;
 
 enum PTeXMode {
-  NSA,
-  CT,
-  NST,
+  wSNI,
+  SCT,
+  sSNI,
 };
 
 PTeXMode getPTeXMode();

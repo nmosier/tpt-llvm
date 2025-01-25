@@ -1,5 +1,5 @@
-; RUN: clang -O1 %s -mllvm --x86-ptex=ct  -mllvm --x86-ptex-sink -o %t.o -c; objdump -d -Mintel --no-show-raw-insn --no-addresses %t.o | FileCheck %s
-; RUN: clang -O1 %s -mllvm --x86-ptex=nst -mllvm --x86-ptex-sink -o %t.o -c; objdump -d -Mintel --no-show-raw-insn --no-addresses %t.o | FileCheck %s
+; RUN: clang -O1 %s -mllvm --x86-ptex=sct -mllvm --x86-ptex-sink -o %t.o -c; objdump -d -Mintel --no-show-raw-insn --no-addresses %t.o | FileCheck %s
+; RUN: clang -O1 %s -mllvm --x86-ptex=sni -mllvm --x86-ptex-sink -o %t.o -c; objdump -d -Mintel --no-show-raw-insn --no-addresses %t.o | FileCheck %s
 
 ; CHECK-LABEL: <test_stride_leak>:
 ; CHECK-DAG: {{^ *}} mov rsi,rsi

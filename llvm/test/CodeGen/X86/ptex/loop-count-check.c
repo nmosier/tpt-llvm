@@ -1,7 +1,7 @@
-// RUN: clang -O1 %s -mllvm --x86-ptex=nst -mllvm --x86-ptex-analyze-branches -o %t.o -c && objdump -d --no-show-raw-insn --no-addresses -Mintel %t.o | FileCheck --check-prefixes=CHECK,PUBLIC %s
-// RUN: clang -O1 %s -mllvm --x86-ptex=ct  -mllvm --x86-ptex-analyze-branches -o %t.o -c && objdump -d --no-show-raw-insn --no-addresses -Mintel %t.o | FileCheck --check-prefixes=CHECK,PUBLIC %s
-// RUN: clang -O1 %s -mllvm --x86-ptex=nst                                    -o %t.o -c && objdump -d --no-show-raw-insn --no-addresses -Mintel %t.o | FileCheck --check-prefixes=CHECK,SECRET %s
-// RUN: clang -O1 %s -mllvm --x86-ptex=ct                                     -o %t.o -c && objdump -d --no-show-raw-insn --no-addresses -Mintel %t.o | FileCheck --check-prefixes=CHECK,PUBLIC %s
+// RUN: clang -O1 %s -mllvm --x86-ptex=sni -mllvm --x86-ptex-analyze-branches -o %t.o -c && objdump -d --no-show-raw-insn --no-addresses -Mintel %t.o | FileCheck --check-prefixes=CHECK,PUBLIC %s
+// RUN: clang -O1 %s -mllvm --x86-ptex=sct -mllvm --x86-ptex-analyze-branches -o %t.o -c && objdump -d --no-show-raw-insn --no-addresses -Mintel %t.o | FileCheck --check-prefixes=CHECK,PUBLIC %s
+// RUN: clang -O1 %s -mllvm --x86-ptex=sni                                    -o %t.o -c && objdump -d --no-show-raw-insn --no-addresses -Mintel %t.o | FileCheck --check-prefixes=CHECK,SECRET %s
+// RUN: clang -O1 %s -mllvm --x86-ptex=sct                                    -o %t.o -c && objdump -d --no-show-raw-insn --no-addresses -Mintel %t.o | FileCheck --check-prefixes=CHECK,PUBLIC %s
 
 #include "util.h"
 
