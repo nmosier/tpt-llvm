@@ -17,6 +17,7 @@
 #include "PTeX/Util.h"
 #include "PTeX/BranchAnalysis.h"
 #include "PTeX/StackAnalysis.h"
+#include "PTeX/PTeX.h"
 
 using namespace llvm;
 using llvm::X86::PublicPhysRegs;
@@ -54,6 +55,8 @@ void PTeXAnalysis::initTransmittedUses(MachineInstr &MI) {
 }
 
 void PTeXAnalysis::initPointerLoadsOrStores(MachineInstr &MI) {
+  if (!X86::UnprotectAllPointers)
+    return;
   for (MachineMemOperand *MMO : MI.memoperands())
     if (MMO->getType().isPointer())
       markAllOpsPublic(MI);
@@ -61,7 +64,7 @@ void PTeXAnalysis::initPointerLoadsOrStores(MachineInstr &MI) {
 
 void PTeXAnalysis::initMachineMemOperands(MachineInstr &MI) {
   for (MachineMemOperand *MMO : MI.memoperands()) {
-    if (MMO->getType().isPointer()) {
+    if (MMO->getType().isPointer() && X86::UnprotectAllPointers) {
       // If it's pointer-typed, unprotect it.
       markAllOpsPublic(MI);
       LLVM_DEBUG(dbgs() << __func__ << ": marking public due to MMO pointer type: " << MI);
@@ -94,7 +97,7 @@ void PTeXAnalysis::initFrameSetupAndDestroy(MachineInstr &MI) {
 }
 
 void PTeXAnalysis::initPointerCallArgs(MachineInstr &MI) {
-  if (!MI.isCall())
+  if (!MI.isCall() || !X86::UnprotectAllPointers)
     return;
 
   const auto &CSI = MF.getCallSitesInfo();
@@ -160,6 +163,9 @@ void PTeXAnalysis::initPointerCallArgs(MachineInstr &MI) {
 }
 
 void PTeXAnalysis::initPointerTypes(MachineInstr &MI) {
+  if (!X86::UnprotectAllPointers)
+    return;
+
   const MachineRegisterInfo &MRI = MF.getRegInfo();
   for (MachineOperand &MO : MI.operands()) {
     // PTEX-FIXME: MI.mayLoadOrStore() is too aggressive.
@@ -173,7 +179,7 @@ void PTeXAnalysis::initPointerTypes(MachineInstr &MI) {
 }
 
 void PTeXAnalysis::initPointerReturnValue(MachineInstr &MI) {
-  if (!MI.isReturn())
+  if (!MI.isReturn() || !X86::UnprotectAllPointers)
     return;
 
   if (!MF.getFunction().getReturnType()->isPointerTy())
@@ -217,9 +223,9 @@ void PTeXAnalysis::init() {
   for (MachineBasicBlock &MBB : MF) {
     for (MachineInstr &MI : MBB) {
       initTransmittedUses(MI);
-      initPointerLoadsOrStores(MI);
       initAlwaysPublicRegs(MI);
       initFrameSetupAndDestroy(MI);
+      initPointerLoadsOrStores(MI);
       initPointerCallArgs(MI);
       initPointerTypes(MI);
       initPointerReturnValue(MI);

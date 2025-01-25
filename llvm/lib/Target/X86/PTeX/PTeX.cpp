@@ -85,6 +85,13 @@ static cl::opt<bool> DeclassifyBlockEntries {
   cl::Hidden,
 };
 
+cl::opt<bool> UnprotectAllPointers
+  {PASS_KEY "-ptrs",
+   cl::desc("[PTeX] Unprotect all pointers"),
+   cl::init(false),
+   cl::Hidden,
+};
+
 static cl::opt<bool> SinkProtectedDefsOpt {
   PASS_KEY "-sink",
   cl::desc("[PTeX] Sink..."),
@@ -960,6 +967,9 @@ static void annotateVirtualPointersInstr(MachineInstr &MI, const MachineRegister
 }
 
 void X86PTeX::annotateVirtualPointers(MachineFunction &MF) {
+  if (!X86::UnprotectAllPointers)
+    return;
+  
   const MachineRegisterInfo &MRI = MF.getRegInfo();
   for (MachineBasicBlock &MBB : MF)
     for (MachineInstr &MI : MBB)
