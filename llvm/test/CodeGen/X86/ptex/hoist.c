@@ -1,4 +1,4 @@
-// RUN: clang -O1 %s -mllvm --x86-ptex=nst -mllvm --x86-ptex-hoist -o %t.o -c && objdump -d --no-show-raw-insn --no-addresses -Mintel %t.o | FileCheck %s
+// RUN: clang -O1 %s -mllvm --x86-ptex=sni -mllvm --x86-ptex-hoist -o %t.o -c && objdump -d --no-show-raw-insn --no-addresses -Mintel %t.o | FileCheck %s
 
 #define leak(n) (* (char *) (n) = 0)
 

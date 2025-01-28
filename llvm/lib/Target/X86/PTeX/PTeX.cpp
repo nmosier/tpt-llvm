@@ -39,12 +39,12 @@ namespace llvm::X86 {
 static cl::opt<PTeXMode> EnablePTeXOpt {
   PASS_KEY,
   cl::desc("Enable PTeX with given mode"),
-  cl::init(NSA),
+  cl::init(wSNI),
   cl::values(
-      clEnumValN(NSA, "nsa", "Non-secret-accessing code (no instrumentation)"),
-      clEnumValN(CT, "ct", "Constant-time code"),
-      clEnumValN(NST, "nst", "Non-secret-transmitting code")),
-};
+      clEnumValN(wSNI, "wsni", "Enforce weak speculative non-interference (wSNI) [Guarnieri+ S&P'21]"),
+      clEnumValN(SCT, "sct", "Enforce speculative constant-time (SCT) [Cauligi+ PLDI'20]"),
+      clEnumValN(sSNI, "ssni", "Enforce strong speculative non-interference (SNI/sSNI) [Guarnieri+ S&P'20], [Guarnieri+ S&P'21]"),
+      clEnumValN(sSNI, "sni", "Alias for 'ssni'"))};
 
 PTeXMode getPTeXMode() {
   return EnablePTeXOpt.getValue();
@@ -128,7 +128,7 @@ static cl::opt<bool> ReloadOpt {
 };
 
 bool EnablePTeX() {
-  return EnablePTeXOpt.getValue() != NSA;
+  return EnablePTeXOpt.getValue() != wSNI;
 }
 
 static bool DumpPTeX(const MachineFunction &MF) {

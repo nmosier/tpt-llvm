@@ -64,7 +64,7 @@ bool BackwardAnalysis::block(MachineBasicBlock &MBB) {
   return Changed;
 }
 
-bool BackwardAnalysis::backpropSafeForInst_NST(const MachineInstr &MI, const PublicPhysRegs &PubRegs_) const {
+bool BackwardAnalysis::backpropSafeForInst_sSNI(const MachineInstr &MI, const PublicPhysRegs &PubRegs_) const {
   // Is this a copy instruction?
   if (TII->isFullCopyInstr(MI)) {
     PTEX_DEBUG(dbgs() << __func__ << ": copy: " << MI);
@@ -194,10 +194,10 @@ bool BackwardAnalysis::backpropSafeForInst_NST(const MachineInstr &MI, const Pub
 
 bool BackwardAnalysis::backpropSafeForInst(const MachineInstr &MI, const PublicPhysRegs &PubRegs) const {
   switch (X86::getPTeXMode()) {
-  case NST:
-    return backpropSafeForInst_NST(MI, PubRegs);
+  case sSNI:
+    return backpropSafeForInst_sSNI(MI, PubRegs);
 
-  case CT:
+  case SCT:
     return true;
 
   default:
@@ -213,7 +213,7 @@ bool BackwardAnalysis::dataDefsPublic(const MachineInstr &MI, const PublicPhysRe
     return false;
 
   switch (X86::getPTeXMode()) {
-  case CT:
+  case SCT:
     // Any output can be public.
     for (const MachineOperand &MO : MI.operands())
       if (MO.isReg() && MO.isDef() && PubRegs.isPublic(MO.getReg()) &&
@@ -221,7 +221,7 @@ bool BackwardAnalysis::dataDefsPublic(const MachineInstr &MI, const PublicPhysRe
         return true;
     return false;
 
-  case NST:
+  case sSNI:
     // All non-flag outputs must already be public.
     {
       bool AnyDefPub = false;

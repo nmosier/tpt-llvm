@@ -1,7 +1,7 @@
-// RUN: clang -O1 %s -mllvm --x86-ptex=ct                          -o %t.o -c && objdump -d --no-show-raw-insn --no-addresses -Mintel %t.o | FileCheck --check-prefixes=SHARED,NOFLAGS %s
-// RUN: clang -O1 %s -mllvm --x86-ptex=nst                         -o %t.o -c && objdump -d --no-show-raw-insn --no-addresses -Mintel %t.o | FileCheck --check-prefixes=SHARED,NOFLAGS %s
-// RUN: clang -O1 %s -mllvm --x86-ptex=ct  -mllvm --x86-ptex-flags -o %t.o -c && objdump -d --no-show-raw-insn --no-addresses -Mintel %t.o | FileCheck --check-prefixes=SHARED,FLAGS   %s
-// RUN: clang -O1 %s -mllvm --x86-ptex=nst -mllvm --x86-ptex-flags -o %t.o -c && objdump -d --no-show-raw-insn --no-addresses -Mintel %t.o | FileCheck --check-prefixes=SHARED,FLAGS   %s
+// RUN: clang -O1 %s -mllvm --x86-ptex=sct                         -o %t.o -c && objdump -d --no-show-raw-insn --no-addresses -Mintel %t.o | FileCheck --check-prefixes=SHARED,NOFLAGS %s
+// RUN: clang -O1 %s -mllvm --x86-ptex=sni                         -o %t.o -c && objdump -d --no-show-raw-insn --no-addresses -Mintel %t.o | FileCheck --check-prefixes=SHARED,NOFLAGS %s
+// RUN: clang -O1 %s -mllvm --x86-ptex=sct -mllvm --x86-ptex-flags -o %t.o -c && objdump -d --no-show-raw-insn --no-addresses -Mintel %t.o | FileCheck --check-prefixes=SHARED,FLAGS   %s
+// RUN: clang -O1 %s -mllvm --x86-ptex=sni -mllvm --x86-ptex-flags -o %t.o -c && objdump -d --no-show-raw-insn --no-addresses -Mintel %t.o | FileCheck --check-prefixes=SHARED,FLAGS   %s
 
 // SHARED-LABEL: <test_inc_64>:
 // NOFLAGS: inc rcx

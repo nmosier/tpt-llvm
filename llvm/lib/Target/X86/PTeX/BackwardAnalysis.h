@@ -23,7 +23,7 @@ private:
 
   bool dataDefsPublic(const MachineInstr &MI, const PublicPhysRegs &PubRegs) const;
   bool backpropSafeForInst(const MachineInstr &MI, const PublicPhysRegs &PubRegs) const;
-  bool backpropSafeForInst_NST(const MachineInstr &MI, const PublicPhysRegs &PubRegs) const;
+  bool backpropSafeForInst_sSNI(const MachineInstr &MI, const PublicPhysRegs &PubRegs) const;
 
   bool erasePubOp(const MachineOperand *MO);
 };
