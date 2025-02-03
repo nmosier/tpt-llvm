@@ -104,6 +104,16 @@ static bool hoistInstructionToPredecessors(MachineInstr *MI, MachineBasicBlock &
   std::set<MachineBasicBlock *> Predecessors;
   llvm::copy(MBB.predecessors(), std::inserter(Predecessors, Predecessors.end()));
 
+  // Does one of the predecessors end in a conditional return? If so, bail.
+  for (MachineBasicBlock *Predecessor : Predecessors) {
+    for (const MachineInstr &Term : Predecessor->terminators()) {
+      if (Term.isReturn() && Term.isConditionalBranch()) {
+        PTEX_DEBUG(dbgs() << "not hoisting due to conditional return: " << Term);
+        return false;
+      }
+    }
+  }
+
   // Split critical edges.
   assert(MBB.pred_size() > 1);
   for (const MachineBasicBlock *Pred : Predecessors) {
