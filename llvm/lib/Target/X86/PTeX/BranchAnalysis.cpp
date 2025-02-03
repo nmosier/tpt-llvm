@@ -1,6 +1,7 @@
 #include "PTeX/BranchAnalysis.h"
 
 #include "llvm/CodeGen/TargetInstrInfo.h"
+#include "PTeX/PTeX.h"
 
 #define DEBUG_TYPE "x86-ptex-analyze-branches"
 
