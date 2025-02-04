@@ -185,6 +185,7 @@ bool X86::hoistProtectedUses(MachineFunction &MF, const X86::PTeXInfo &PTI, Pass
   // Iterate over each control-flow edge.
   // Check if any registers are in-protected at the destination block but
   // out-unprotected at the source block.
+  // TODO: We might want to only hoist if the differently-typed values are live...
 
   for (MachineBasicBlock &DstMBB : MF) {
     // Nothing to do if DstMBB has only one predecessor.
