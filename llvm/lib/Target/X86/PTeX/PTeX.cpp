@@ -209,7 +209,7 @@ bool X86PTeX::runOnMachineFunction(MachineFunction& MF) {
   // TODO: Extract into function.
  restart_analysis:
   // Run protection analysis.
-  PTA.emplace(MF);
+  PTA.emplace(MF, *this);
   PTA->run();
 
   // Check if we need to unpeel loops.

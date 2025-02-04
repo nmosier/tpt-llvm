@@ -343,3 +343,16 @@ bool PTeXAnalysis::fixup() {
   }
   return Changed;
 }
+
+MachineBasicBlock *PTeXAnalysis::splitCriticalEdge(MachineBasicBlock *Src, MachineBasicBlock *Dest) {
+  if (MachineBasicBlock *New = Src->SplitCriticalEdge(Dest, Pass)) {
+    In[New] = Out[Src];
+    Out[New] = In[Dest];
+    return New;
+  } else {
+    LLVM_DEBUG(dbgs() << "PTeXAnalysis::splitCriticalEdge: failed to split critical edge ";
+               Src->printName(dbgs());
+               Dest->printName(dbgs()));
+    return nullptr;
+  }
+}
