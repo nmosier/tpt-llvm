@@ -26,6 +26,7 @@
 #include "PTeX/Hoist.h"
 #include "PTeX/Flags.h"
 #include "PTeX/Reload.h"
+#include "PTeX/Rotate.h"
 
 using namespace llvm;
 
@@ -127,6 +128,13 @@ static cl::opt<bool> ReloadOpt {
   cl::Hidden,
 };
 
+static cl::opt<bool> RotateLoopsOpt {
+  PASS_KEY "-rotate",
+  cl::desc("[PTeX] Rotate loops"),
+  cl::init(false),
+  cl::Hidden,
+};
+
 bool EnablePTeX() {
   return EnablePTeXOpt.getValue() != wSNI;
 }
@@ -148,7 +156,8 @@ public:
   X86PTeX(bool Instrument) : MachineFunctionPass(ID), Instrument(Instrument) {}
 
   void getAnalysisUsage(AnalysisUsage& AU) const override {
-    AU.setPreservesCFG();
+    if (!X86::RotateLoopsOpt)
+      AU.setPreservesCFG();
     MachineFunctionPass::getAnalysisUsage(AU);
   }
 
@@ -221,6 +230,11 @@ bool X86PTeX::runOnMachineFunction(MachineFunction& MF) {
     goto restart_analysis;
 
   if (X86::HoistProtectedUsesOpt && X86::hoistProtectedUses(MF, *PTA, *this))
+    goto restart_analysis;
+
+  // TODO: Loop rotation should in theory preserve PTA, so we don't need to restart analysis
+  // necessarily.
+  if (X86::RotateLoopsOpt && X86::rotateLoops(MF, *PTA))
     goto restart_analysis;
 
   // Eliminate any tainted flags reaching a partial flag update.
