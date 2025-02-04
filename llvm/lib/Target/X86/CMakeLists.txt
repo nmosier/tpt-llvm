@@ -105,6 +105,7 @@ set(sources
   PTeX/Util.cpp
   PTeX/PTeXInfo.cpp
   PTeX/Reload.cpp
+  PTeX/Rotate.cpp
   X86AnnotatePublic.cpp
   X86LLSCTUtil.cpp # PTEX-TODO: Consolidate.
   )
