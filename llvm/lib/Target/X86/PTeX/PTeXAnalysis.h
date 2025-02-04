@@ -21,10 +21,14 @@ inline bool regAlwaysPublic(Register Reg, const TargetRegisterInfo &TRI) {
 
 class PTeXAnalysis : public PTeXInfo {
 public:
-  PTeXAnalysis(MachineFunction &MF): PTeXInfo(MF) {}
+  MachineFunctionPass &Pass;
+  
+  PTeXAnalysis(MachineFunction &MF, MachineFunctionPass &Pass): PTeXInfo(MF), Pass(Pass) {}
 
   void run();
   void dump() const { print(errs()); }
+
+  MachineBasicBlock *splitCriticalEdge(MachineBasicBlock *Src, MachineBasicBlock *Dest);
 
 private:
   // Initialization functions.
