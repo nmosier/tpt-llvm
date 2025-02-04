@@ -234,7 +234,7 @@ bool X86PTeX::runOnMachineFunction(MachineFunction& MF) {
 
   // TODO: Loop rotation should in theory preserve PTA, so we don't need to restart analysis
   // necessarily.
-  if (X86::RotateLoopsOpt && X86::rotateLoops(MF, *PTA, *this, false))
+  if (X86::RotateLoopsOpt && X86::rotateLoops(MF, *PTA))
     goto restart_analysis;
 
   // Eliminate any tainted flags reaching a partial flag update.
