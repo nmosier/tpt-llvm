@@ -40,6 +40,13 @@ static cl::opt<bool> AnalyzeStack {
   cl::Hidden,
 };
 
+static cl::opt<bool> SimpleAnalysis {
+  PASS_KEY "-simple",
+  cl::init(false),
+  cl::Hidden,
+  cl::desc("[PTeX] Simple analysis: run forward and backward passes individually, and then merge results"),
+};
+
 void PTeXAnalysis::initTransmittedUses(MachineInstr &MI) {
   if (MI.isCall())
     markOpPublic(MI.getOperand(0));
@@ -279,6 +286,22 @@ void PTeXAnalysis::run() {
 
   LLVM_DEBUG(dbgs() << "==== init ====\n");
   LLVM_DEBUG(print(dbgs()));
+
+  if (SimpleAnalysis) {
+    ForwardAnalysis Forward(*this);
+    Forward.run();
+    LLVM_DEBUG(dbgs() << "===== fwd =====\n");
+    LLVM_DEBUG(Forward.print(dbgs()));
+    BackwardAnalysis Backward(*this);
+    Backward.run();
+    LLVM_DEBUG(dbgs() << "===== bwd =====\n");
+    LLVM_DEBUG(Backward.print(dbgs()));
+    merge(Forward);
+    merge(Backward);
+    LLVM_DEBUG(dbgs() << "===== simple =====\n");
+    LLVM_DEBUG(print(dbgs()));
+    return;
+  }
 
   bool IterChanged;
   int NumIters = 0;
