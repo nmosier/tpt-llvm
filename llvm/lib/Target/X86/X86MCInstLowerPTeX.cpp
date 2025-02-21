@@ -10,6 +10,7 @@
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Support/WithColor.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/CodeGen/TargetInstrInfo.h"
 
 #define DEBUG_TYPE "x86-ptex"
 
@@ -20,6 +21,13 @@ namespace llvm::X86 {
 static cl::opt<bool> AllowUntyped {
   "x86-ptex-allow-untyped",
   cl::desc("Allow untyped instructions (issue warning, but don't abort)"),
+  cl::init(false),
+  cl::Hidden,
+};
+
+static cl::opt<bool> BugfixFold {
+  "x86-ptex-bugfix-fold",
+  cl::desc("[PTeX] Fix fold bug"),
   cl::init(false),
   cl::Hidden,
 };
@@ -67,9 +75,17 @@ void X86MCInstLowerTPE(const MachineInstr *MI, MCInst& OutMI) {
   };
 
   // Add the PROT prefix if some outputs are marked private.
-  const bool Protected = llvm::any_of(MI->operands(), [] (const MachineOperand &MO) -> bool {
+  bool Protected = llvm::any_of(MI->operands(), [] (const MachineOperand &MO) -> bool {
     return MO.isReg() && MO.isDef() && !MO.isPublic();
   });
+
+  // Or if the instruction has a folded memory operand.
+  if (BugfixFold && (hasFoldedLoad(*MI) || hasFoldedStore(*MI))) {
+    // This instruction was folded, so we just mark it protected to be safe.
+    Protected = true;
+    LLVM_DEBUG(dbgs() << "Marking folded instruction as protected: " << *MI);
+  }
+  
   if (!Protected)
     return;
 
