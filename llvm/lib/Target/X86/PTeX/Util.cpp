@@ -345,3 +345,23 @@ bool llvm::debugMF(const MachineFunction &MF) {
     return true;
   return false;
 }
+
+static bool hasFoldedMemory(const MachineInstr &MI, bool Load, bool Store) {
+  const TargetInstrInfo *TII = MI.getParent()->getParent()->getSubtarget().getInstrInfo();
+  const unsigned UnfoldedOpcode = TII->getOpcodeAfterMemoryUnfold(MI.getOpcode(), /*UnfoldLoad*/Load, /*UnfoldStore*/Store);
+  if (UnfoldedOpcode == 0)
+    return false;
+  assert(UnfoldedOpcode != MI.getOpcode());
+  const StringRef OpName = TII->getName(MI.getOpcode());
+  if (OpName.starts_with("MOV"))
+    return false;
+  return true;
+}
+
+bool llvm::hasFoldedLoad(const MachineInstr &MI) {
+  return hasFoldedMemory(MI, true, false);
+}
+
+bool llvm::hasFoldedStore(const MachineInstr &MI) {
+  return hasFoldedMemory(MI, false, true);
+}

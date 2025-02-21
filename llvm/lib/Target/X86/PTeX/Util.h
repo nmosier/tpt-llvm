@@ -54,4 +54,7 @@ bool hasMemoryHazard(const MachineInstr &MI1, const MachineInstr &MI2);
 bool debugMF(const MachineFunction &MF);
 #define PTEX_DEBUG_MF(...) do { if (debugMF(MF)) { PTEX_DEBUG(__VA_ARGS__); } } while (0)
 
+bool hasFoldedLoad(const MachineInstr &MI);
+bool hasFoldedStore(const MachineInstr &MI);
+
 }
