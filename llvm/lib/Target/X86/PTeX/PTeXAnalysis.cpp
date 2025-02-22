@@ -288,16 +288,24 @@ void PTeXAnalysis::run() {
   LLVM_DEBUG(print(dbgs()));
 
   if (SimpleAnalysis) {
-    ForwardAnalysis Forward(*this);
-    Forward.run();
-    LLVM_DEBUG(dbgs() << "===== fwd =====\n");
-    LLVM_DEBUG(Forward.print(dbgs()));
+    bool Changed;
+
     BackwardAnalysis Backward(*this);
-    Backward.run();
+    do {
+      Changed = Backward.run();
+      merge(Backward);
+    } while (Changed);
     LLVM_DEBUG(dbgs() << "===== bwd =====\n");
     LLVM_DEBUG(Backward.print(dbgs()));
-    merge(Forward);
-    merge(Backward);
+
+    ForwardAnalysis Forward(*this);
+    do {
+      Changed = Forward.run();
+      merge(Forward);
+    } while (Changed);
+    LLVM_DEBUG(dbgs() << "===== fwd =====\n");
+    LLVM_DEBUG(Forward.print(dbgs()));
+    
     LLVM_DEBUG(dbgs() << "===== simple =====\n");
     LLVM_DEBUG(print(dbgs()));
     return;

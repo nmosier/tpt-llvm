@@ -25,13 +25,6 @@ static cl::opt<bool> AllowUntyped {
   cl::Hidden,
 };
 
-static cl::opt<bool> BugfixFold {
-  "x86-ptex-bugfix-fold",
-  cl::desc("[PTeX] Fix fold bug"),
-  cl::init(false),
-  cl::Hidden,
-};
-
 static bool shouldConsiderInstructionForPrefix(const MachineInstr &MI) {
   if (!EnablePTeX())
     return false;
@@ -80,7 +73,7 @@ void X86MCInstLowerTPE(const MachineInstr *MI, MCInst& OutMI) {
   });
 
   // Or if the instruction has a folded memory operand.
-  if (BugfixFold && (hasFoldedLoad(*MI) || hasFoldedStore(*MI))) {
+  if (hasFoldedLoad(*MI) || hasFoldedStore(*MI)) {
     // This instruction was folded, so we just mark it protected to be safe.
     Protected = true;
     LLVM_DEBUG(dbgs() << "Marking folded instruction as protected: " << *MI);

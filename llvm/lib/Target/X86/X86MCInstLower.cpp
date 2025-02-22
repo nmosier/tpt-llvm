@@ -395,12 +395,6 @@ static unsigned convertTailJumpOpcode(unsigned Opcode) {
   return Opcode;
 }
 
-static cl::opt<bool> BugfixLower {
-  "x86-ptex-bugfix-lower",
-  cl::Hidden,
-  cl::init(false),
-};
-
 void X86MCInstLower::Lower(const MachineInstr *MI, MCInst &OutMI) const {
   OutMI.setOpcode(MI->getOpcode());
 
@@ -416,8 +410,7 @@ void X86MCInstLower::Lower(const MachineInstr *MI, MCInst &OutMI) const {
       X86::optimizeMOV(OutMI, In64BitMode) ||
       X86::optimizeToFixedRegisterOrShortImmediateForm(OutMI)) {
     // PTeX: Propagate MI->MC flags.
-    if (BugfixLower)
-      X86::X86MCInstLowerTPE(MI, OutMI);
+    X86::X86MCInstLowerTPE(MI, OutMI);
     return;
   }
 
