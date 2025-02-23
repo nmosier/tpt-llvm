@@ -42,7 +42,7 @@ static cl::opt<bool> AnalyzeStack {
 
 static cl::opt<bool> SimpleAnalysis {
   PASS_KEY "-simple",
-  cl::init(false),
+  cl::init(true),
   cl::Hidden,
   cl::desc("[PTeX] Simple analysis: run forward and backward passes individually, and then merge results"),
 };
