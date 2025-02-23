@@ -67,12 +67,26 @@ void X86MCInstLowerTPE(const MachineInstr *MI, MCInst& OutMI) {
     OutMI.setFlags(flags | f);
   };
 
-  // Add the PROT prefix if some outputs are marked private.
-  bool Protected = llvm::any_of(MI->operands(), [] (const MachineOperand &MO) -> bool {
-    return MO.isReg() && MO.isDef() && !MO.isPublic();
+  // We'll mark it protected under three conditions.
+  // 1: A explicit output is protected.
+  // 2: There are no explicit outputs and an implicit output is marked protected.
+  // 3: The instruction has a folded memory operand.
+  bool Protected = false;
+
+  // 1: An explicit output is protected.
+  Protected |= llvm::any_of(MI->operands(), [] (const MachineOperand &MO) {
+    return MO.isReg() && MO.isDef() && !MO.isImplicit() && !MO.isPublic();
   });
 
-  // Or if the instruction has a folded memory operand.
+  // 2: There are no explicit outputs and an implicit output is marked protected.
+  const bool UnprotExpDef = llvm::any_of(MI->operands(), [] (const MachineOperand &MO) {
+    return MO.isReg() && MO.isDef() && !MO.isImplicit() && MO.isPublic();
+  });
+  Protected |= !UnprotExpDef && llvm::any_of(MI->operands(), [] (const MachineOperand &MO) {
+    return MO.isReg() && MO.isDef() && MO.isImplicit() && !MO.isPublic();
+  });
+
+  // 3: Or if the instruction has a folded memory operand.
   if (hasFoldedLoad(*MI) || hasFoldedStore(*MI)) {
     // This instruction was folded, so we just mark it protected to be safe.
     Protected = true;
