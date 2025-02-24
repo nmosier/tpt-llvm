@@ -85,12 +85,9 @@ void ompd_init() {
   // Find the location of libomp.so thru dladdr and replace the libomp with
   // libompd to get the full path of libompd
   Dl_info dl_info;
-  int ret = dladdr((void *)ompd_init, &dl_info);
-  if (!ret) {
-    fprintf(stderr, "%s\n", dlerror());
-  }
   int lib_path_length;
-  if (strrchr(dl_info.dli_fname, '/')) {
+  if (dladdr((void *)ompd_init, &dl_info) &&
+      strrchr(dl_info.dli_fname, '/')) {
     lib_path_length = strrchr(dl_info.dli_fname, '/') - dl_info.dli_fname;
     libname =
         (char *)malloc(lib_path_length + 12 /*for '/libompd.so' and '\0'*/);
